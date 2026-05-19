@@ -1,0 +1,58 @@
+﻿[package]
+name = "cache-mod"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.75"
+readme = "README.md"
+license = "Apache-2.0 OR MIT"
+
+authors = [
+    "James Gober <me@jamesgober.com>"
+]
+
+description = "High-performance in-process caching with multiple eviction policies (LRU, LFU, TinyLFU, TTL, size-bounded). Async-safe, lock-minimized internals. Typed key-value API. No dependency on any external store."
+
+keywords = [
+    "cache",
+    "lru",
+    "lfu",
+    "ttl",
+    "rust"
+]
+
+categories = [
+    "caching",
+    "data-structures"
+]
+
+documentation = "https://docs.rs/cache-mod"
+repository    = "https://github.com/jamesgober/cache-mod"
+homepage      = "https://github.com/jamesgober/cache-mod"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+name = "cache_mod"
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[profile.bench]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = true
