@@ -1,7 +1,7 @@
-//! Byte-bound cache — capacity is total weight across entries, not entry count.
+//! Byte-bound cache — arena-backed reference implementation.
 
 use core::hash::Hash;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::cache::Cache;
@@ -17,6 +17,10 @@ use crate::util::MutexExt;
 /// An entry whose own weight exceeds `max_weight` is silently rejected:
 /// the insert returns `None` and the value is dropped. (No cache could
 /// honour such a request.)
+///
+/// 0.6.0 implementation: arena-backed doubly-linked list with O(1) promote
+/// and O(1) eviction (eviction may loop until enough weight is reclaimed).
+/// The lock-strategy upgrade lands in 0.7.0 without changing this public surface.
 ///
 /// # Choice of unit
 ///
@@ -56,16 +60,119 @@ pub struct SizedCache<K, V> {
     inner: Mutex<Inner<K, V>>,
 }
 
-struct Entry<V> {
+struct Node<K, V> {
+    key: K,
     value: V,
     weight: usize,
+    prev: Option<usize>,
+    next: Option<usize>,
 }
 
 struct Inner<K, V> {
-    map: HashMap<K, Entry<V>>,
-    /// Access order. Front = most-recently-used, back = least-recently-used.
-    order: VecDeque<K>,
+    nodes: Vec<Option<Node<K, V>>>,
+    free: Vec<usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    map: HashMap<K, usize>,
     total_weight: usize,
+}
+
+impl<K, V> Inner<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    fn new() -> Self {
+        Self {
+            nodes: Vec::new(),
+            free: Vec::new(),
+            head: None,
+            tail: None,
+            map: HashMap::new(),
+            total_weight: 0,
+        }
+    }
+
+    fn alloc(&mut self, node: Node<K, V>) -> usize {
+        if let Some(idx) = self.free.pop() {
+            self.nodes[idx] = Some(node);
+            idx
+        } else {
+            self.nodes.push(Some(node));
+            self.nodes.len() - 1
+        }
+    }
+
+    fn dealloc(&mut self, idx: usize) -> Node<K, V> {
+        let node = self.nodes[idx]
+            .take()
+            .unwrap_or_else(|| unreachable!("arena slot must be occupied"));
+        self.free.push(idx);
+        node
+    }
+
+    fn unlink(&mut self, idx: usize) {
+        let (prev, next) = {
+            let n = self.nodes[idx]
+                .as_ref()
+                .unwrap_or_else(|| unreachable!("unlink target must be occupied"));
+            (n.prev, n.next)
+        };
+        match prev {
+            Some(p) => {
+                self.nodes[p]
+                    .as_mut()
+                    .unwrap_or_else(|| unreachable!())
+                    .next = next
+            }
+            None => self.head = next,
+        }
+        match next {
+            Some(n) => {
+                self.nodes[n]
+                    .as_mut()
+                    .unwrap_or_else(|| unreachable!())
+                    .prev = prev
+            }
+            None => self.tail = prev,
+        }
+        if let Some(n) = self.nodes[idx].as_mut() {
+            n.prev = None;
+            n.next = None;
+        }
+    }
+
+    fn push_front(&mut self, idx: usize) {
+        let old_head = self.head;
+        if let Some(n) = self.nodes[idx].as_mut() {
+            n.prev = None;
+            n.next = old_head;
+        }
+        if let Some(h) = old_head {
+            if let Some(n) = self.nodes[h].as_mut() {
+                n.prev = Some(idx);
+            }
+        } else {
+            self.tail = Some(idx);
+        }
+        self.head = Some(idx);
+    }
+
+    fn promote(&mut self, idx: usize) {
+        if self.head == Some(idx) {
+            return;
+        }
+        self.unlink(idx);
+        self.push_front(idx);
+    }
+
+    /// Pop the LRU tail and return the evicted node's (key, weight).
+    fn evict_tail(&mut self) -> Option<(K, usize)> {
+        let tail_idx = self.tail?;
+        self.unlink(tail_idx);
+        let node = self.dealloc(tail_idx);
+        self.total_weight = self.total_weight.saturating_sub(node.weight);
+        Some((node.key, node.weight))
+    }
 }
 
 impl<K, V> SizedCache<K, V>
@@ -94,11 +201,7 @@ where
         Ok(Self {
             max_weight,
             weigher,
-            inner: Mutex::new(Inner {
-                map: HashMap::new(),
-                order: VecDeque::new(),
-                total_weight: 0,
-            }),
+            inner: Mutex::new(Inner::new()),
         })
     }
 
@@ -120,62 +223,78 @@ where
 {
     fn get(&self, key: &K) -> Option<V> {
         let mut inner = self.inner.lock_recover();
-        let value = inner.map.get(key)?.value.clone();
-        promote(&mut inner.order, key);
-        Some(value)
+        let idx = *inner.map.get(key)?;
+        inner.promote(idx);
+        inner.nodes[idx].as_ref().map(|n| n.value.clone())
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
         let new_weight = (self.weigher)(&value);
-        // Reject values that can't possibly fit. Drop them silently — the
-        // alternative would be a new error variant for a degenerate input.
+        // Reject values that cannot possibly fit.
         if new_weight > self.max_weight {
             return None;
         }
 
         let mut inner = self.inner.lock_recover();
 
-        // Live update path: replace value, fix up total_weight, return old.
-        if let Some(existing) = inner.map.get_mut(&key) {
-            let old_value = core::mem::replace(&mut existing.value, value);
-            let old_weight = existing.weight;
-            existing.weight = new_weight;
-            // total_weight delta = new - old (may go negative; both unsigned, so
-            // compute as add-then-sub via saturating arithmetic).
+        // Live update: replace value, fix up weight delta, promote.
+        if let Some(&idx) = inner.map.get(&key) {
+            let (old_value, old_weight) = inner.nodes[idx]
+                .as_mut()
+                .map(|n| {
+                    let ov = core::mem::replace(&mut n.value, value);
+                    let ow = n.weight;
+                    n.weight = new_weight;
+                    (ov, ow)
+                })
+                .unwrap_or_else(|| unreachable!("mapped index must be occupied"));
             inner.total_weight = inner
                 .total_weight
                 .saturating_add(new_weight)
                 .saturating_sub(old_weight);
-            promote(&mut inner.order, &key);
-            evict_until_fits(&mut inner, self.max_weight);
+            inner.promote(idx);
+            // Live update may have overshot — evict from LRU until fit.
+            while inner.total_weight > self.max_weight {
+                if inner.evict_tail().is_none() {
+                    break;
+                }
+            }
+            // Pop the updated key from any map entry left dangling if it
+            // was evicted. (Shouldn't happen — we promoted it to head — but
+            // be defensive.)
             return Some(old_value);
         }
 
-        // New entry — make room first, then insert.
-        let projected_total = inner.total_weight.saturating_add(new_weight);
-        if projected_total > self.max_weight {
-            evict_until_fits_for_new(&mut inner, self.max_weight, new_weight);
+        // New entry — evict from the LRU end until the projected total fits.
+        while inner.total_weight.saturating_add(new_weight) > self.max_weight {
+            match inner.evict_tail() {
+                Some((evicted_key, _)) => {
+                    let _ = inner.map.remove(&evicted_key);
+                }
+                None => break,
+            }
         }
-        inner.order.push_front(key.clone());
-        let _ = inner.map.insert(
-            key,
-            Entry {
-                value,
-                weight: new_weight,
-            },
-        );
+
+        let idx = inner.alloc(Node {
+            key: key.clone(),
+            value,
+            weight: new_weight,
+            prev: None,
+            next: None,
+        });
+        inner.push_front(idx);
+        let _ = inner.map.insert(key, idx);
         inner.total_weight = inner.total_weight.saturating_add(new_weight);
         None
     }
 
     fn remove(&self, key: &K) -> Option<V> {
         let mut inner = self.inner.lock_recover();
-        let entry = inner.map.remove(key)?;
-        inner.total_weight = inner.total_weight.saturating_sub(entry.weight);
-        if let Some(pos) = inner.order.iter().position(|k| k == key) {
-            let _ = inner.order.remove(pos);
-        }
-        Some(entry.value)
+        let idx = inner.map.remove(key)?;
+        inner.unlink(idx);
+        let node = inner.dealloc(idx);
+        inner.total_weight = inner.total_weight.saturating_sub(node.weight);
+        Some(node.value)
     }
 
     fn contains_key(&self, key: &K) -> bool {
@@ -188,8 +307,11 @@ where
 
     fn clear(&self) {
         let mut inner = self.inner.lock_recover();
+        inner.nodes.clear();
+        inner.free.clear();
+        inner.head = None;
+        inner.tail = None;
         inner.map.clear();
-        inner.order.clear();
         inner.total_weight = 0;
     }
 
@@ -197,46 +319,5 @@ where
     /// type-level docs.
     fn capacity(&self) -> usize {
         self.max_weight
-    }
-}
-
-fn promote<K: Eq>(order: &mut VecDeque<K>, key: &K) {
-    if let Some(pos) = order.iter().position(|k| k == key) {
-        if let Some(k) = order.remove(pos) {
-            order.push_front(k);
-        }
-    }
-}
-
-/// Evict from the LRU end until `total_weight` is within `max_weight`.
-/// Used on live update where the new weight might overshoot.
-fn evict_until_fits<K, V>(inner: &mut Inner<K, V>, max_weight: usize)
-where
-    K: Eq + Hash,
-{
-    while inner.total_weight > max_weight {
-        let Some(victim_key) = inner.order.pop_back() else {
-            break;
-        };
-        if let Some(victim) = inner.map.remove(&victim_key) {
-            inner.total_weight = inner.total_weight.saturating_sub(victim.weight);
-        }
-    }
-}
-
-/// Variant for new-entry inserts: evict until the projected total (current plus
-/// incoming weight) fits. Separated from `evict_until_fits` because the trigger
-/// condition is different.
-fn evict_until_fits_for_new<K, V>(inner: &mut Inner<K, V>, max_weight: usize, incoming: usize)
-where
-    K: Eq + Hash,
-{
-    while inner.total_weight.saturating_add(incoming) > max_weight {
-        let Some(victim_key) = inner.order.pop_back() else {
-            break;
-        };
-        if let Some(victim) = inner.map.remove(&victim_key) {
-            inner.total_weight = inner.total_weight.saturating_sub(victim.weight);
-        }
     }
 }

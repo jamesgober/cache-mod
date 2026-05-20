@@ -33,6 +33,7 @@
 
 | Version | Date       | Notes                                                            |
 | ------- | ---------- | ---------------------------------------------------------------- |
+| 0.6.0   | 2026-05-20 | Arena-backed internals: O(1) LRU/TinyLFU/Sized, O(log n) LFU — [v0.6.0](./release/v0.6.0.md) |
 | 0.5.1   | 2026-05-20 | Docs + repo hygiene patch — [v0.5.1](./release/v0.5.1.md)        |
 | 0.5.0   | 2026-05-20 | TinyLFU, SizedCache, property tests, benchmarks — [v0.5.0](./release/v0.5.0.md) |
 | 0.4.0   | 2026-05-20 | TTL eviction policy — [v0.4.0](./release/v0.4.0.md)              |

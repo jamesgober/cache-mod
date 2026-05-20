@@ -19,6 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-05-20
+
+Implementation-quality milestone. Public surface is byte-identical to 0.5.x — every existing call-site compiles and behaves identically — but the internal data structures behind every cache type changed. Asymptotic complexity is better across the board.
+
+### Changed
+
+- `LruCache`: replaced the `Mutex<{ HashMap<K, V>, VecDeque<K> }>` reference implementation with a `Mutex<{ Vec<Option<Node>>, free-list, head/tail indices, HashMap<K, usize> }>` arena. `get` and `insert` now do O(1) promotes; eviction is O(1). The 0.5.x `VecDeque::iter().position()` scan on every access is gone.
+- `TinyLfuCache`: arena-backed in the same shape as `LruCache`. The Count-Min Sketch, admission filter, and aging step are unchanged. O(1) promote / O(1) admission decision (was O(n) victim scan).
+- `SizedCache`: arena-backed with weight bookkeeping in each node. O(1) promote, O(1) per eviction step (a single insert may loop the eviction step until the weight invariant is restored). The 0.5.x `VecDeque::iter().position()` scan is gone.
+- `LfuCache`: replaced the O(n) victim scan with a `BTreeMap<(count, age), K>` priority index. Every access and eviction is now O(log n). The trade-off is one extra `K::clone()` per access (the priority index needs to know the key) — paid back many times over once the cache holds more than a few dozen entries.
+- `TtlCache`: unchanged. The lazy-expiry pattern already pays for itself, and the typical TTL access pattern (read-once, evict-on-access) does not benefit from an arena. Will be revisited in a later release if profiling shows a hot spot.
+- Lock strategy unchanged across all types: still a single `Mutex<Inner>`. Sharded `Mutex` (DashMap-style) or `crossbeam-epoch` lock-free reclamation deferred to **0.7.0** — a separate concurrency-focused release.
+- `Cargo.toml`: version `0.5.1` → `0.6.0`.
+
+### Verified
+
+- All 47 integration tests, 9 property tests, and 18 doctests pass unchanged.
+- `cargo bench` compiles cleanly. Workload-dependent timings are intentionally not reproduced in the changelog — run locally for accurate baselines.
+
+---
+
 ## [0.5.1] - 2026-05-20
 
 Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update` reads no new public symbols. The user-visible improvements are concentrated on the crates.io / GitHub side: cleaner README, proper API reference, public release archive, and an MSRV CI fix that landed without a release marker.
@@ -143,7 +164,8 @@ Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.6.0
 [0.5.1]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.1
 [0.5.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.0
 [0.4.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.4.0

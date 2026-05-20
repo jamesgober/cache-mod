@@ -1,5 +1,5 @@
 //! TinyLFU cache — Count-Min Sketch frequency estimator + admission filter
-//! on top of an LRU-ordered main cache.
+//! on top of an arena-backed LRU main cache.
 
 use core::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
@@ -33,16 +33,19 @@ const MIN_SKETCH_WIDTH: usize = 64;
 /// have rejected it. Callers that need strict insertion guarantees should
 /// use `LruCache` or `LfuCache` instead.
 ///
-/// Reference implementation details:
+/// 0.6.0 implementation:
 ///
+/// - main cache is arena-backed (O(1) promote, O(1) evict — same shape as `LruCache`)
 /// - depth-4 Count-Min Sketch with `u8` saturating counters
 /// - width = `max(MIN_SKETCH_WIDTH, 2 × capacity)`, rounded to the next power of two
 /// - periodic frequency decay: every `10 × capacity` increments, every counter
-///   is right-shifted by 1 (this is the "aging" step from the W-TinyLFU paper,
-///   which keeps the sketch responsive to shifting workloads)
+///   is right-shifted by 1 (W-TinyLFU "aging" step, keeps the sketch responsive
+///   to shifting workloads)
 /// - main cache uses LRU ordering; eviction victim = least-recently-accessed
-/// - lock-minimized via `&self` + `Mutex<Inner>`; a true sharded / lock-free
-///   variant lands in a later minor without changing this public surface
+/// - lock-minimized via `&self` + `Mutex<Inner>`; a sharded / lock-free variant
+///   lands in 0.7.0 without changing this public surface
+///
+/// [cms]: https://en.wikipedia.org/wiki/Count%E2%80%93min_sketch
 ///
 /// # Example
 ///
@@ -61,22 +64,114 @@ const MIN_SKETCH_WIDTH: usize = 64;
 /// // A subsequent insert will see "hot" as warm in the sketch.
 /// assert_eq!(cache.get(&"hot"), Some(1));
 /// ```
-///
-/// [cms]: https://en.wikipedia.org/wiki/Count%E2%80%93min_sketch
 pub struct TinyLfuCache<K, V> {
     capacity: NonZeroUsize,
     inner: Mutex<Inner<K, V>>,
 }
 
-struct Entry<V> {
+struct Node<K, V> {
+    key: K,
     value: V,
-    last_access: u64,
+    prev: Option<usize>,
+    next: Option<usize>,
 }
 
 struct Inner<K, V> {
-    map: HashMap<K, Entry<V>>,
+    nodes: Vec<Option<Node<K, V>>>,
+    free: Vec<usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    map: HashMap<K, usize>,
     sketch: CountMinSketch,
-    clock: u64,
+}
+
+impl<K, V> Inner<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            nodes: Vec::with_capacity(cap),
+            free: Vec::new(),
+            head: None,
+            tail: None,
+            map: HashMap::with_capacity(cap),
+            sketch: CountMinSketch::new(cap),
+        }
+    }
+
+    fn alloc(&mut self, node: Node<K, V>) -> usize {
+        if let Some(idx) = self.free.pop() {
+            self.nodes[idx] = Some(node);
+            idx
+        } else {
+            self.nodes.push(Some(node));
+            self.nodes.len() - 1
+        }
+    }
+
+    fn dealloc(&mut self, idx: usize) -> Node<K, V> {
+        let node = self.nodes[idx]
+            .take()
+            .unwrap_or_else(|| unreachable!("arena slot must be occupied"));
+        self.free.push(idx);
+        node
+    }
+
+    fn unlink(&mut self, idx: usize) {
+        let (prev, next) = {
+            let n = self.nodes[idx]
+                .as_ref()
+                .unwrap_or_else(|| unreachable!("unlink target must be occupied"));
+            (n.prev, n.next)
+        };
+        match prev {
+            Some(p) => {
+                self.nodes[p]
+                    .as_mut()
+                    .unwrap_or_else(|| unreachable!())
+                    .next = next
+            }
+            None => self.head = next,
+        }
+        match next {
+            Some(n) => {
+                self.nodes[n]
+                    .as_mut()
+                    .unwrap_or_else(|| unreachable!())
+                    .prev = prev
+            }
+            None => self.tail = prev,
+        }
+        if let Some(n) = self.nodes[idx].as_mut() {
+            n.prev = None;
+            n.next = None;
+        }
+    }
+
+    fn push_front(&mut self, idx: usize) {
+        let old_head = self.head;
+        if let Some(n) = self.nodes[idx].as_mut() {
+            n.prev = None;
+            n.next = old_head;
+        }
+        if let Some(h) = old_head {
+            if let Some(n) = self.nodes[h].as_mut() {
+                n.prev = Some(idx);
+            }
+        } else {
+            self.tail = Some(idx);
+        }
+        self.head = Some(idx);
+    }
+
+    fn promote(&mut self, idx: usize) {
+        if self.head == Some(idx) {
+            return;
+        }
+        self.unlink(idx);
+        self.push_front(idx);
+    }
 }
 
 impl<K, V> TinyLfuCache<K, V>
@@ -116,11 +211,7 @@ where
         let cap = capacity.get();
         Self {
             capacity,
-            inner: Mutex::new(Inner {
-                map: HashMap::with_capacity(cap),
-                sketch: CountMinSketch::new(cap),
-                clock: 0,
-            }),
+            inner: Mutex::new(Inner::with_capacity(cap)),
         }
     }
 }
@@ -132,58 +223,62 @@ where
 {
     fn get(&self, key: &K) -> Option<V> {
         let mut inner = self.inner.lock_recover();
-        // Every observation feeds the sketch, even on cache miss — that's
-        // how the cache learns which keys are "hot" before they are admitted.
+        // Every observation feeds the sketch, even on cache miss.
         inner.sketch.increment(key);
-        inner.clock = inner.clock.wrapping_add(1);
-        let now = inner.clock;
-        let entry = inner.map.get_mut(key)?;
-        entry.last_access = now;
-        Some(entry.value.clone())
+        let idx = *inner.map.get(key)?;
+        inner.promote(idx);
+        inner.nodes[idx].as_ref().map(|n| n.value.clone())
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
         let mut inner = self.inner.lock_recover();
         inner.sketch.increment(&key);
-        inner.clock = inner.clock.wrapping_add(1);
-        let now = inner.clock;
 
         // Live update: existing key always succeeds (no admission check).
-        if let Some(existing) = inner.map.get_mut(&key) {
-            let old = core::mem::replace(&mut existing.value, value);
-            existing.last_access = now;
+        if let Some(&idx) = inner.map.get(&key) {
+            let old = inner.nodes[idx]
+                .as_mut()
+                .map(|n| core::mem::replace(&mut n.value, value))
+                .unwrap_or_else(|| unreachable!("mapped index must be occupied"));
+            inner.promote(idx);
             return Some(old);
         }
 
-        // New key. If at capacity, run the admission filter.
+        // New key. Admission filter kicks in at capacity.
         if inner.map.len() >= self.capacity.get() {
             let candidate_freq = inner.sketch.estimate(&key);
-            let victim = find_lru_victim(&inner.map);
-            if let Some(victim_key) = victim {
-                let victim_freq = inner.sketch.estimate(&victim_key);
-                if candidate_freq <= victim_freq {
-                    // Reject the admission. The value is dropped at the
-                    // end of the function. Returning `None` matches the
-                    // "no prior entry was present" semantic.
-                    return None;
-                }
-                let _ = inner.map.remove(&victim_key);
+            let tail_idx = inner.tail?;
+            let victim_key = inner.nodes[tail_idx]
+                .as_ref()
+                .map(|n| n.key.clone())
+                .unwrap_or_else(|| unreachable!("tail must be occupied"));
+            let victim_freq = inner.sketch.estimate(&victim_key);
+            if candidate_freq <= victim_freq {
+                // Reject — value dropped at function exit.
+                return None;
             }
+            inner.unlink(tail_idx);
+            let _ = inner.dealloc(tail_idx);
+            let _ = inner.map.remove(&victim_key);
         }
 
-        let _ = inner.map.insert(
-            key,
-            Entry {
-                value,
-                last_access: now,
-            },
-        );
+        let idx = inner.alloc(Node {
+            key: key.clone(),
+            value,
+            prev: None,
+            next: None,
+        });
+        inner.push_front(idx);
+        let _ = inner.map.insert(key, idx);
         None
     }
 
     fn remove(&self, key: &K) -> Option<V> {
         let mut inner = self.inner.lock_recover();
-        inner.map.remove(key).map(|e| e.value)
+        let idx = inner.map.remove(key)?;
+        inner.unlink(idx);
+        let node = inner.dealloc(idx);
+        Some(node.value)
     }
 
     fn contains_key(&self, key: &K) -> bool {
@@ -196,9 +291,12 @@ where
 
     fn clear(&self) {
         let mut inner = self.inner.lock_recover();
+        inner.nodes.clear();
+        inner.free.clear();
+        inner.head = None;
+        inner.tail = None;
         inner.map.clear();
         inner.sketch.reset();
-        inner.clock = 0;
     }
 
     fn capacity(&self) -> usize {
@@ -206,37 +304,21 @@ where
     }
 }
 
-fn find_lru_victim<K, V>(map: &HashMap<K, Entry<V>>) -> Option<K>
-where
-    K: Clone,
-{
-    map.iter()
-        .min_by_key(|(_, e)| e.last_access)
-        .map(|(k, _)| k.clone())
-}
-
 // -----------------------------------------------------------------------------
 // Count-Min Sketch
 // -----------------------------------------------------------------------------
 
-/// A small Count-Min Sketch with `u8` saturating counters and periodic
-/// halving. Used as the frequency estimator behind `TinyLfuCache`'s
-/// admission filter.
 struct CountMinSketch {
     counters: Vec<u8>,
     width: usize,
-    /// `width` as `u64` — pre-cached because every probe modulos by it.
     width_u64: u64,
     samples: u64,
-    /// Number of increments between sketch halvings (the "aging" trigger).
     sample_window: u64,
 }
 
 impl CountMinSketch {
     fn new(capacity: usize) -> Self {
         let mut width = capacity.saturating_mul(2).max(MIN_SKETCH_WIDTH);
-        // Round up to the next power of two so the modulus could later be
-        // swapped for a mask without changing semantics.
         width = width.next_power_of_two();
         let sample_window = (capacity as u64).saturating_mul(10).max(64);
         Self {
@@ -281,16 +363,12 @@ impl CountMinSketch {
         self.samples = 0;
     }
 
-    /// Halve every counter — the W-TinyLFU "aging" step. Recent activity
-    /// dominates over time-bygone activity, which lets the cache follow
-    /// workload shifts instead of being locked in to the first hot set.
     fn age(&mut self) {
         for c in self.counters.iter_mut() {
             *c >>= 1;
         }
     }
 
-    /// Compute the absolute counter index for the `d`-th sketch row.
     fn cell<K: Hash>(&self, d: usize, key: &K) -> usize {
         let h = hash_with_seed(key, d as u64);
         let col = (h % self.width_u64) as usize;
