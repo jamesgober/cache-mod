@@ -1,0 +1,19 @@
+# Normalize all text to LF in the repo and on every checkout.
+# rustfmt.toml sets `newline_style = "Unix"`; without this file, Windows
+# CI runners (default core.autocrlf=true) check out CRLF and rustfmt rejects.
+* text=auto eol=lf
+
+# Explicit declarations for source / config / docs.
+*.rs        text eol=lf
+*.toml      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+.gitignore  text eol=lf
+.editorconfig text eol=lf
+
+# Exclude development directories from archive exports.
+/.dev       export-ignore
+/tests      export-ignore
+/.github    export-ignore
+/.gitignore export-ignore
