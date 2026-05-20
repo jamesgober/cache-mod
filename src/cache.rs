@@ -70,6 +70,10 @@ where
     /// Removes every entry. Capacity is preserved.
     fn clear(&self);
 
-    /// Configured maximum number of entries.
+    /// Configured capacity bound.
+    ///
+    /// The unit depends on the implementation:
+    /// - `LruCache`, `LfuCache`, `TtlCache`, `TinyLfuCache` — maximum number of entries.
+    /// - `SizedCache` — maximum total byte-weight across entries.
     fn capacity(&self) -> usize;
 }

@@ -19,6 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-05-20
+
+### Added
+
+- Public `TinyLfuCache<K, V>` — a Count-Min Sketch frequency estimator (depth 4, `u8` saturating counters, periodic halving) plus an admission filter on top of an LRU-ordered main cache. On capacity overflow, a new key is **admitted only if its estimated frequency exceeds the LRU victim's**; otherwise the insert call returns `None` and the value is dropped. This is a deliberate semantic deviation from the other cache types — surfaced prominently in the type docs.
+- Public `SizedCache<K, V>` — capacity bound is **total byte-weight**, not entry count. A user-supplied `fn(&V) -> usize` weighs each value at insert time; LRU eviction makes room when an insert would overshoot `max_weight`. Exposes `SizedCache::max_weight()` and `SizedCache::total_weight()` as the meaningful queries; `Cache::capacity()` returns `max_weight` for consistency. Values whose own weight exceeds `max_weight` are silently rejected (the only sane response).
+- Property tests via `proptest` — five capacity-invariant properties (`len <= capacity` / `total_weight <= max_weight` after arbitrary op sequences) plus four insert-then-get round-trip properties. Run on every CI invocation.
+- Criterion benchmarks — five-group suite (`LruCache` / `LfuCache` / `TtlCache` / `TinyLfuCache` / `SizedCache`) covering `get_hit` and `insert_existing` at capacity 1024. Gated behind `required-features = ["std"]` so `--no-default-features` builds still pass.
+- 15 new integration tests: 6 covering `TinyLfuCache` admission semantics and 9 covering `SizedCache` byte-weight bookkeeping. Total integration test count: 47.
+- 5 new doctests on the new types and constructors. Total doctest count: 18.
+
+### Changed
+
+- Crate-level docs in `src/lib.rs` now describe the public surface as "feature-complete" — five cache types live behind the [`Cache`] trait. The `LruCache` / `LfuCache` / `TtlCache` / `TinyLfuCache` docs no longer claim a 0.5.0 lock-free upgrade; that work is deferred to a later minor with no API-surface impact.
+- `Cache::capacity` rustdoc generalized to acknowledge `SizedCache`'s byte-weight interpretation alongside the entry-count interpretation used by the other policies.
+- Internal: extracted the `pub(crate) trait MutexExt::lock_recover` into `src/util.rs` and refactored `LruCache` / `LfuCache` / `TtlCache` to use it. Three identical poison-recovery helpers reduced to one. `find_victim`-style scan helpers stay per-policy because their comparison criteria differ.
+- `Cargo.toml`: version `0.4.0` → `0.5.0`. Added `proptest` and `criterion` as dev-dependencies. Declared the `[[bench]]` target.
+
+### Fixed
+
+### Security
+
+---
+
 ## [0.4.0] - 2026-05-20
 
 ### Added
@@ -95,7 +119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.0
 [0.4.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.3.0
 [0.2.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.2.0

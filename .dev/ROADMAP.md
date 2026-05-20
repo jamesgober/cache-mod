@@ -73,17 +73,39 @@ Skill areas in scope:
 
 ---
 
-## Phase 0.5.0 - TinyLFU + implementation quality
+## Phase 0.5.0 - TinyLFU + Sized + property tests + benchmarks (done)
 
-- [ ] `TinyLfuCache<K, V>` — admission filter (Count-Min Sketch) + LFU main
-- [ ] Lock-free arena-backed rewrite of `LruCache` and `LfuCache` internals (public API unchanged)
-- [ ] `SizedCache<K, V>` — byte-bound capacity policy (composes with primary policies)
-- [ ] All public API methods implemented (no `todo!()`)
-- [ ] Property tests for state machines / invariants
-- [ ] Basic benchmarks (Criterion)
-- [ ] No `unwrap` / `expect` outside of tests
+- [x] `TinyLfuCache<K, V>` — admission filter (Count-Min Sketch) + LRU main
+- [x] `SizedCache<K, V>` — byte-bound capacity policy
+- [x] `MutexExt::lock_recover` scaffolding extracted; three caches use it
+- [x] `Cache::capacity` rustdoc generalized to cover `SizedCache`
+- [x] Property tests for state machines / invariants via `proptest`
+- [x] Basic benchmarks (Criterion) — 5 groups, `get_hit` + `insert_existing` each
+- [x] No `unwrap` / `expect` outside of tests
+- [x] CHANGELOG updated
+- [x] README updated
+- [x] `.dev/release/v0.5.0.md` written
+
+Deferred to 0.6.0:
+
+- [ ] Lock-free arena-backed rewrite of `LruCache` / `LfuCache` / `TtlCache` (public API unchanged)
+- [ ] O(1) bucket-based victim selection for `LfuCache`
+- [ ] Optional sharded mutex layer for higher-throughput workloads
+
+---
+
+## Phase 0.6.0 - Lock-free / arena-backed internals
+
+Goal: keep every 0.5.0 public surface byte-identical; replace internal
+`Mutex<{ HashMap, VecDeque }>` machinery with arena-backed structures and
+either sharded locking or true lock-free reclamation.
+
+- [ ] Arena-backed doubly-linked list for `LruCache` access order (no per-op VecDeque scan)
+- [ ] O(1) frequency-bucket structure for `LfuCache`
+- [ ] Decide between sharded `Mutex` (DashMap-style) and `crossbeam-epoch` for the lock-strategy upgrade
+- [ ] Criterion regression vs 0.5.0 baselines
 - [ ] CHANGELOG updated
-- [ ] `.dev/release/v0.5.0.md` written
+- [ ] `.dev/release/v0.6.0.md` written
 
 ---
 

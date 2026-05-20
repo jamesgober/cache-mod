@@ -4,10 +4,11 @@
 use core::hash::Hash;
 use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 use crate::cache::Cache;
 use crate::error::CacheError;
+use crate::util::MutexExt;
 
 /// A bounded, thread-safe LRU cache.
 ///
@@ -15,9 +16,9 @@ use crate::error::CacheError;
 /// [`get`](Cache::get) and [`insert`](Cache::insert) count as accesses and
 /// promote the affected entry to most-recently-used.
 ///
-/// This is the 0.2.0 reference implementation: correct, `&self`-everywhere,
-/// `Mutex`-guarded. A lock-free, arena-backed implementation lands in 0.5.0
-/// without changing this public surface.
+/// This is the reference implementation: correct, `&self`-everywhere,
+/// `Mutex`-guarded. A lock-free, arena-backed implementation lands in a
+/// later minor without changing this public surface.
 ///
 /// # Example
 ///
@@ -89,17 +90,6 @@ where
             }),
         }
     }
-
-    /// Recovers a [`MutexGuard`] even if the lock has been poisoned by a
-    /// panic in another thread. The cache's invariants are not weakened by
-    /// a poisoned lock: every operation re-establishes consistency between
-    /// `map` and `order` before returning.
-    fn lock_inner(&self) -> MutexGuard<'_, Inner<K, V>> {
-        match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
 }
 
 impl<K, V> Cache<K, V> for LruCache<K, V>
@@ -108,14 +98,14 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         let value = inner.map.get(key)?.clone();
         promote(&mut inner.order, key);
         Some(value)
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         let old = inner.map.insert(key.clone(), value);
         if old.is_some() {
             promote(&mut inner.order, &key);
@@ -131,7 +121,7 @@ where
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         let value = inner.map.remove(key)?;
         if let Some(pos) = inner.order.iter().position(|k| k == key) {
             let _ = inner.order.remove(pos);
@@ -140,15 +130,15 @@ where
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.lock_inner().map.contains_key(key)
+        self.inner.lock_recover().map.contains_key(key)
     }
 
     fn len(&self) -> usize {
-        self.lock_inner().map.len()
+        self.inner.lock_recover().map.len()
     }
 
     fn clear(&self) {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         inner.map.clear();
         inner.order.clear();
     }

@@ -3,11 +3,12 @@
 use core::hash::Hash;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::error::CacheError;
+use crate::util::MutexExt;
 
 /// Fallback deadline span (~100 years) used when `Instant + ttl` would
 /// overflow. No realistic cache lifetime approaches this.
@@ -24,9 +25,10 @@ const FAR_FUTURE: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 100);
 /// Both [`insert`](Cache::insert) and [`insert_with_ttl`](TtlCache::insert_with_ttl)
 /// reset the deadline on the affected entry — writes always re-arm the timer.
 ///
-/// This is the 0.4.0 reference implementation: correct, `&self`-everywhere,
+/// This is the reference implementation: correct, `&self`-everywhere,
 /// `Mutex`-guarded. Eviction and lazy purge are O(n) scans. The lock-free,
-/// arena-backed replacement lands in 0.5.0 without changing this public surface.
+/// arena-backed replacement lands in a later minor without changing this
+/// public surface.
 ///
 /// # Example
 ///
@@ -125,7 +127,7 @@ where
     /// ```
     pub fn insert_with_ttl(&self, key: K, value: V, ttl: Duration) -> Option<V> {
         let deadline = compute_deadline(ttl);
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         self.insert_inner(&mut inner, key, value, deadline)
     }
 
@@ -168,13 +170,6 @@ where
         );
         None
     }
-
-    fn lock_inner(&self) -> MutexGuard<'_, Inner<K, V>> {
-        match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
 }
 
 impl<K, V> Cache<K, V> for TtlCache<K, V>
@@ -183,7 +178,7 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         let now = Instant::now();
         // Read the deadline first (Copy) so the borrow drops before any mutation.
         let expires_at = inner.map.get(key).map(|e| e.expires_at)?;
@@ -196,17 +191,17 @@ where
 
     fn insert(&self, key: K, value: V) -> Option<V> {
         let deadline = compute_deadline(self.default_ttl);
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         self.insert_inner(&mut inner, key, value, deadline)
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         inner.map.remove(key).map(|e| e.value)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         let now = Instant::now();
         let Some(expires_at) = inner.map.get(key).map(|e| e.expires_at) else {
             return false;
@@ -219,13 +214,13 @@ where
     }
 
     fn len(&self) -> usize {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         purge_expired(&mut inner.map);
         inner.map.len()
     }
 
     fn clear(&self) {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         inner.map.clear();
     }
 

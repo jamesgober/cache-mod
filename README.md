@@ -36,12 +36,12 @@ High-performance in-process caching with multiple eviction policies (LRU, LFU, T
 
 ```toml
 [dependencies]
-cache-mod = "0.4"
+cache-mod = "0.5"
 ```
 
 ```rust
 use std::time::Duration;
-use cache_mod::{Cache, LfuCache, LruCache, TtlCache};
+use cache_mod::{Cache, LfuCache, LruCache, SizedCache, TinyLfuCache, TtlCache};
 
 // LRU — evicts the least-recently-accessed entry on overflow.
 let lru: LruCache<&'static str, u32> = LruCache::new(64).expect("capacity > 0");
@@ -55,8 +55,17 @@ lfu.insert("requests", 1);
 // TTL — entries expire after their per-entry deadline; lazy expiry on access.
 let ttl: TtlCache<&'static str, u32> =
     TtlCache::new(64, Duration::from_secs(300)).expect("capacity > 0");
-ttl.insert("session", 42);
 ttl.insert_with_ttl("flash", 7, Duration::from_secs(5));
+
+// TinyLFU — Count-Min Sketch admission filter rejects cold candidates.
+let tinylfu: TinyLfuCache<&'static str, u32> = TinyLfuCache::new(64).expect("capacity > 0");
+tinylfu.insert("hot", 1);
+
+// SizedCache — capacity is total byte-weight, not entry count.
+fn byte_weight(v: &Vec<u8>) -> usize { v.len() }
+let sized: SizedCache<&'static str, Vec<u8>> =
+    SizedCache::new(4 * 1024, byte_weight).expect("max_weight > 0");
+sized.insert("payload", vec![0u8; 256]);
 ```
 
 ### What's shipped
@@ -65,11 +74,12 @@ ttl.insert_with_ttl("flash", 7, Duration::from_secs(5));
 - `LruCache<K, V>` — bounded, thread-safe Least-Recently-Used cache.
 - `LfuCache<K, V>` — bounded, thread-safe Least-Frequently-Used cache.
 - `TtlCache<K, V>` — bounded, thread-safe Time-To-Live cache with lazy expiry.
+- `TinyLfuCache<K, V>` — Count-Min Sketch admission filter + LRU main cache.
+- `SizedCache<K, V>` — capacity bound is total byte-weight across entries.
 - `CacheError` — error type returned by constructors.
 
-TinyLFU and size-bounded variants land in 0.5.0 alongside lock-free,
-arena-backed rewrites of the existing reference implementations — public
-surface unchanged.
+Lock-free, arena-backed rewrites of the existing reference implementations
+land in 0.6.0 — public surface unchanged.
 
 ---
 

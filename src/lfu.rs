@@ -3,10 +3,11 @@
 use core::hash::Hash;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 use crate::cache::Cache;
 use crate::error::CacheError;
+use crate::util::MutexExt;
 
 /// A bounded, thread-safe LFU cache.
 ///
@@ -18,10 +19,10 @@ use crate::error::CacheError;
 /// [`contains_key`](Cache::contains_key) is a query and does not increment
 /// the counter or touch access order, per the [`Cache`] contract.
 ///
-/// This is the 0.3.0 reference implementation: correct and `&self`-everywhere,
+/// This is the reference implementation: correct and `&self`-everywhere,
 /// `Mutex`-guarded. Eviction is O(n) — a scan for the minimum on overflow.
-/// An O(1) bucket-based implementation lands in 0.5.0 without changing this
-/// public surface.
+/// An O(1) bucket-based implementation lands in a later minor without
+/// changing this public surface.
 ///
 /// # Example
 ///
@@ -108,13 +109,6 @@ where
             }),
         }
     }
-
-    fn lock_inner(&self) -> MutexGuard<'_, Inner<K, V>> {
-        match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
-    }
 }
 
 impl<K, V> Cache<K, V> for LfuCache<K, V>
@@ -123,7 +117,7 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         inner.clock = inner.clock.wrapping_add(1);
         let now = inner.clock;
         let entry = inner.map.get_mut(key)?;
@@ -133,7 +127,7 @@ where
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         inner.clock = inner.clock.wrapping_add(1);
         let now = inner.clock;
 
@@ -163,20 +157,20 @@ where
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         inner.map.remove(key).map(|e| e.value)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.lock_inner().map.contains_key(key)
+        self.inner.lock_recover().map.contains_key(key)
     }
 
     fn len(&self) -> usize {
-        self.lock_inner().map.len()
+        self.inner.lock_recover().map.len()
     }
 
     fn clear(&self) {
-        let mut inner = self.lock_inner();
+        let mut inner = self.inner.lock_recover();
         inner.map.clear();
         inner.clock = 0;
     }

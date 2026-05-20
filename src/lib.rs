@@ -7,12 +7,13 @@
 //!
 //! # Status
 //!
-//! The public API surface is defined: the [`Cache`] trait, the [`CacheError`]
-//! error type, and three reference cache implementations — [`LruCache`]
-//! (Least-Recently-Used, 0.2.0), [`LfuCache`] (Least-Frequently-Used, 0.3.0),
-//! and [`TtlCache`] (Time-To-Live with lazy expiry, 0.4.0). TinyLFU and
-//! size-bounded eviction policies land in 0.5.0. The API is not yet frozen —
-//! pin exact versions until 1.0.
+//! The public API surface is feature-complete: the [`Cache`] trait, the
+//! [`CacheError`] error type, and five reference cache implementations —
+//! [`LruCache`] (Least-Recently-Used), [`LfuCache`] (Least-Frequently-Used),
+//! [`TtlCache`] (Time-To-Live, lazy expiry), [`TinyLfuCache`] (Count-Min Sketch
+//! admission filter + LRU main), and [`SizedCache`] (byte-bound capacity).
+//! Lock-free, arena-backed rewrites land in 0.6.0 without changing this
+//! public surface. The API is not yet frozen — pin exact versions until 1.0.
 //!
 //! # Quick start
 //!
@@ -57,7 +58,13 @@ mod lfu;
 #[cfg(feature = "std")]
 mod lru;
 #[cfg(feature = "std")]
+mod sized;
+#[cfg(feature = "std")]
+mod tinylfu;
+#[cfg(feature = "std")]
 mod ttl;
+#[cfg(feature = "std")]
+mod util;
 
 pub use cache::Cache;
 pub use error::CacheError;
@@ -66,6 +73,10 @@ pub use error::CacheError;
 pub use lfu::LfuCache;
 #[cfg(feature = "std")]
 pub use lru::LruCache;
+#[cfg(feature = "std")]
+pub use sized::SizedCache;
+#[cfg(feature = "std")]
+pub use tinylfu::TinyLfuCache;
 #[cfg(feature = "std")]
 pub use ttl::TtlCache;
 

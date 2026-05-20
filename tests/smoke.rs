@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use cache_mod::{Cache, CacheError, LfuCache, LruCache, TtlCache};
+use cache_mod::{Cache, CacheError, LfuCache, LruCache, SizedCache, TinyLfuCache, TtlCache};
 
 #[test]
 fn version_is_set() {
@@ -357,4 +357,192 @@ fn ttl_is_send_and_sync() {
     fn assert_sync<T: Sync>() {}
     assert_send::<TtlCache<u32, String>>();
     assert_sync::<TtlCache<u32, String>>();
+}
+
+// -----------------------------------------------------------------------------
+// TinyLfuCache (0.5.0)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn tinylfu_zero_capacity_is_rejected() {
+    let err = TinyLfuCache::<u32, u32>::new(0).err();
+    assert_eq!(err, Some(CacheError::InvalidCapacity));
+}
+
+#[test]
+fn tinylfu_insert_then_get_returns_value() {
+    let cache: TinyLfuCache<u32, u32> = TinyLfuCache::new(4).expect("capacity > 0");
+    assert_eq!(cache.insert(1, 10), None);
+    assert_eq!(cache.get(&1), Some(10));
+    assert_eq!(cache.len(), 1);
+}
+
+#[test]
+fn tinylfu_existing_key_update_always_admits() {
+    let cache: TinyLfuCache<u32, u32> = TinyLfuCache::new(2).expect("capacity > 0");
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    // Updating an existing key bypasses the admission filter and returns
+    // the previous value.
+    assert_eq!(cache.insert(1, 11), Some(10));
+    assert_eq!(cache.get(&1), Some(11));
+}
+
+#[test]
+fn tinylfu_warm_candidate_wins_admission_over_cold_victim() {
+    let cache: TinyLfuCache<u32, u32> = TinyLfuCache::new(2).expect("capacity > 0");
+
+    // Fill the cache.
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    // Build up substantial frequency for an outsider key (3) without
+    // admitting it (admission filter rejects until 3 is "warmer" than
+    // the coldest in-cache entry).
+    for _ in 0..50 {
+        // get(&3) bumps the sketch even on miss.
+        let _ = cache.get(&3);
+    }
+    // Now try to admit 3 — its sketch frequency should exceed the
+    // never-touched victims', so admission succeeds.
+    cache.insert(3, 30);
+    assert_eq!(cache.get(&3), Some(30));
+}
+
+#[test]
+fn tinylfu_clear_resets_sketch() {
+    let cache: TinyLfuCache<u32, u32> = TinyLfuCache::new(4).expect("capacity > 0");
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    cache.clear();
+    assert!(cache.is_empty());
+    assert_eq!(cache.capacity(), 4);
+    assert_eq!(cache.get(&1), None);
+}
+
+#[test]
+fn tinylfu_is_send_and_sync() {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    assert_send::<TinyLfuCache<u32, String>>();
+    assert_sync::<TinyLfuCache<u32, String>>();
+}
+
+// -----------------------------------------------------------------------------
+// SizedCache (0.5.0)
+// -----------------------------------------------------------------------------
+
+fn unit_weigher(_: &u32) -> usize {
+    1
+}
+
+// The weigher's signature must exactly match `fn(&V) -> usize` for the
+// `SizedCache<&'static str, Vec<u8>>` instances below, so `&Vec<u8>` is
+// required here even though clippy would otherwise prefer `&[u8]`.
+#[allow(clippy::ptr_arg)]
+fn byte_weigher(v: &Vec<u8>) -> usize {
+    v.len()
+}
+
+#[test]
+fn sized_zero_max_weight_is_rejected() {
+    let err = SizedCache::<u32, u32>::new(0, unit_weigher).err();
+    assert_eq!(err, Some(CacheError::InvalidCapacity));
+}
+
+#[test]
+fn sized_insert_then_get_returns_value() {
+    let cache: SizedCache<u32, u32> = SizedCache::new(8, unit_weigher).expect("max_weight > 0");
+    assert_eq!(cache.insert(1, 10), None);
+    assert_eq!(cache.get(&1), Some(10));
+    assert_eq!(cache.total_weight(), 1);
+}
+
+#[test]
+fn sized_eviction_by_weight() {
+    // max_weight = 3, each value weighs 1, so the cache holds up to 3 entries
+    // and the 4th insert evicts the LRU.
+    let cache: SizedCache<u32, u32> = SizedCache::new(3, unit_weigher).expect("max_weight > 0");
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    cache.insert(3, 30);
+    // Access 1 -> 1 becomes MRU, 2 becomes LRU.
+    let _ = cache.get(&1);
+    cache.insert(4, 40); // evicts 2
+    assert_eq!(cache.get(&2), None);
+    assert_eq!(cache.get(&1), Some(10));
+    assert_eq!(cache.get(&3), Some(30));
+    assert_eq!(cache.get(&4), Some(40));
+    assert_eq!(cache.total_weight(), 3);
+}
+
+#[test]
+fn sized_byte_weight_tracked_accurately() {
+    let cache: SizedCache<&'static str, Vec<u8>> =
+        SizedCache::new(100, byte_weigher).expect("max_weight > 0");
+    cache.insert("a", vec![0u8; 40]);
+    cache.insert("b", vec![0u8; 30]);
+    assert_eq!(cache.total_weight(), 70);
+
+    // Inserting 50 more bytes (total 120) would overflow — must evict "a"
+    // (the LRU) to make room. After eviction: 30 + 50 = 80 <= 100.
+    cache.insert("c", vec![0u8; 50]);
+    assert_eq!(cache.total_weight(), 80);
+    assert!(!cache.contains_key(&"a"));
+}
+
+#[test]
+fn sized_replace_updates_total_weight() {
+    let cache: SizedCache<&'static str, Vec<u8>> =
+        SizedCache::new(100, byte_weigher).expect("max_weight > 0");
+    cache.insert("k", vec![0u8; 20]);
+    assert_eq!(cache.total_weight(), 20);
+
+    // Replacing with a larger value should bump total_weight.
+    let old = cache.insert("k", vec![0u8; 60]);
+    assert!(old.is_some());
+    assert_eq!(cache.total_weight(), 60);
+}
+
+#[test]
+fn sized_oversized_value_silently_rejected() {
+    let cache: SizedCache<u32, Vec<u8>> =
+        SizedCache::new(50, byte_weigher).expect("max_weight > 0");
+    // Value larger than max_weight cannot fit. insert returns None and the
+    // cache is unchanged.
+    let result = cache.insert(1, vec![0u8; 100]);
+    assert_eq!(result, None);
+    assert!(!cache.contains_key(&1));
+    assert_eq!(cache.total_weight(), 0);
+}
+
+#[test]
+fn sized_remove_updates_total_weight() {
+    let cache: SizedCache<&'static str, Vec<u8>> =
+        SizedCache::new(100, byte_weigher).expect("max_weight > 0");
+    cache.insert("a", vec![0u8; 30]);
+    cache.insert("b", vec![0u8; 20]);
+    assert_eq!(cache.total_weight(), 50);
+
+    assert_eq!(cache.remove(&"a"), Some(vec![0u8; 30]));
+    assert_eq!(cache.total_weight(), 20);
+}
+
+#[test]
+fn sized_clear_resets_weight() {
+    let cache: SizedCache<u32, u32> = SizedCache::new(8, unit_weigher).expect("max_weight > 0");
+    cache.insert(1, 10);
+    cache.insert(2, 20);
+    cache.clear();
+    assert!(cache.is_empty());
+    assert_eq!(cache.total_weight(), 0);
+    assert_eq!(cache.max_weight(), 8);
+    assert_eq!(cache.capacity(), 8); // capacity() returns max_weight for SizedCache
+}
+
+#[test]
+fn sized_is_send_and_sync() {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    assert_send::<SizedCache<u32, String>>();
+    assert_sync::<SizedCache<u32, String>>();
 }
