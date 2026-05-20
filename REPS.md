@@ -1,4 +1,4 @@
-﻿# REPS - Rust Efficiency & Performance Standards
+# REPS - Rust Efficiency & Performance Standards
 
 > SUPREME AUTHORITY for this repository.
 

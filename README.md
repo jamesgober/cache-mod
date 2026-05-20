@@ -1,4 +1,4 @@
-﻿<h1 align="center">
+<h1 align="center">
     <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
     <br>
     <strong>cache-mod</strong>
@@ -20,9 +20,9 @@
 
 ## Status
 
-**Active development.** Scaffolded and on the path to 1.0.
+**Active development.** Foundation milestone (0.2.0) shipped. On the path to 1.0.
 
-The public API is not yet stable. Pin specific versions; expect changes pre-1.0.
+The public API is not yet frozen. Pin specific versions; expect additive (and occasionally breaking) changes pre-1.0.
 
 ---
 
@@ -36,8 +36,30 @@ High-performance in-process caching with multiple eviction policies (LRU, LFU, T
 
 ```toml
 [dependencies]
-cache-mod = "0.1"
+cache-mod = "0.2"
 ```
+
+```rust
+use cache_mod::{Cache, LruCache};
+
+let cache: LruCache<&'static str, u32> = LruCache::new(64).expect("capacity > 0");
+
+cache.insert("requests", 1);
+cache.insert("errors", 0);
+
+assert_eq!(cache.get(&"requests"), Some(1));
+assert_eq!(cache.len(), 2);
+```
+
+### What's shipped
+
+- `Cache<K, V>` trait — the common read / write / evict contract.
+- `LruCache<K, V>` — bounded, thread-safe Least-Recently-Used cache.
+- `CacheError` — error type returned by constructors.
+
+LFU, TinyLFU, TTL, and size-bounded variants land in subsequent minors. The
+lock-free, arena-backed `LruCache` rewrite lands in 0.5.0 without changing
+the public surface.
 
 ---
 

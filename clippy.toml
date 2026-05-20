@@ -1,4 +1,4 @@
-﻿# clippy configuration for cache-mod
+# clippy configuration for cache-mod
 avoid-breaking-exported-api = true
 msrv = "1.75"
 cognitive-complexity-threshold = 30
