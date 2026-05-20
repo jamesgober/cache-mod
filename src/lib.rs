@@ -8,10 +8,11 @@
 //! # Status
 //!
 //! The public API surface is defined: the [`Cache`] trait, the [`CacheError`]
-//! error type, and two reference cache implementations — [`LruCache`]
-//! (Least-Recently-Used, 0.2.0) and [`LfuCache`] (Least-Frequently-Used,
-//! 0.3.0). TinyLFU, TTL, and size-bounded eviction policies land in
-//! subsequent minors. The API is not yet frozen — pin exact versions until 1.0.
+//! error type, and three reference cache implementations — [`LruCache`]
+//! (Least-Recently-Used, 0.2.0), [`LfuCache`] (Least-Frequently-Used, 0.3.0),
+//! and [`TtlCache`] (Time-To-Live with lazy expiry, 0.4.0). TinyLFU and
+//! size-bounded eviction policies land in 0.5.0. The API is not yet frozen —
+//! pin exact versions until 1.0.
 //!
 //! # Quick start
 //!
@@ -55,6 +56,8 @@ mod error;
 mod lfu;
 #[cfg(feature = "std")]
 mod lru;
+#[cfg(feature = "std")]
+mod ttl;
 
 pub use cache::Cache;
 pub use error::CacheError;
@@ -63,6 +66,8 @@ pub use error::CacheError;
 pub use lfu::LfuCache;
 #[cfg(feature = "std")]
 pub use lru::LruCache;
+#[cfg(feature = "std")]
+pub use ttl::TtlCache;
 
 /// Crate version string, populated by Cargo at build time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

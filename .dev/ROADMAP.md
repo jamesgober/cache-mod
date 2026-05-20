@@ -59,14 +59,17 @@ Skill areas in scope:
 
 ---
 
-## Phase 0.4.0 - TTL eviction policy
+## Phase 0.4.0 - TTL eviction policy (done)
 
-- [ ] `TtlCache<K, V>` reference implementation with lazy expiry on access
-- [ ] Per-entry expiration; bounded capacity for hard ceiling
-- [ ] Optional per-call TTL override (`insert_with_ttl`)
-- [ ] Integration tests with controllable clock
-- [ ] CHANGELOG updated
-- [ ] `.dev/release/v0.4.0.md` written
+- [x] `TtlCache<K, V>` reference implementation with lazy expiry on access
+- [x] Per-entry expiration; bounded capacity for hard ceiling
+- [x] Optional per-call TTL override (`insert_with_ttl`)
+- [x] Soonest-expiry-first eviction (prefers already-expired over live entries)
+- [x] `Instant::checked_add` overflow guard with far-future fallback
+- [x] Integration tests using short TTLs + small sleeps (no clock injection yet)
+- [x] CHANGELOG updated
+- [x] README updated
+- [x] `.dev/release/v0.4.0.md` written
 
 ---
 

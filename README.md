@@ -36,11 +36,12 @@ High-performance in-process caching with multiple eviction policies (LRU, LFU, T
 
 ```toml
 [dependencies]
-cache-mod = "0.3"
+cache-mod = "0.4"
 ```
 
 ```rust
-use cache_mod::{Cache, LfuCache, LruCache};
+use std::time::Duration;
+use cache_mod::{Cache, LfuCache, LruCache, TtlCache};
 
 // LRU — evicts the least-recently-accessed entry on overflow.
 let lru: LruCache<&'static str, u32> = LruCache::new(64).expect("capacity > 0");
@@ -50,7 +51,12 @@ assert_eq!(lru.get(&"requests"), Some(1));
 // LFU — evicts the lowest-counter entry on overflow.
 let lfu: LfuCache<&'static str, u32> = LfuCache::new(64).expect("capacity > 0");
 lfu.insert("requests", 1);
-assert_eq!(lfu.get(&"requests"), Some(1));
+
+// TTL — entries expire after their per-entry deadline; lazy expiry on access.
+let ttl: TtlCache<&'static str, u32> =
+    TtlCache::new(64, Duration::from_secs(300)).expect("capacity > 0");
+ttl.insert("session", 42);
+ttl.insert_with_ttl("flash", 7, Duration::from_secs(5));
 ```
 
 ### What's shipped
@@ -58,11 +64,12 @@ assert_eq!(lfu.get(&"requests"), Some(1));
 - `Cache<K, V>` trait — the common read / write / evict contract.
 - `LruCache<K, V>` — bounded, thread-safe Least-Recently-Used cache.
 - `LfuCache<K, V>` — bounded, thread-safe Least-Frequently-Used cache.
+- `TtlCache<K, V>` — bounded, thread-safe Time-To-Live cache with lazy expiry.
 - `CacheError` — error type returned by constructors.
 
-TinyLFU, TTL, and size-bounded variants land in subsequent minors. The
-lock-free, arena-backed rewrites of `LruCache` and `LfuCache` land in 0.5.0
-without changing the public surface.
+TinyLFU and size-bounded variants land in 0.5.0 alongside lock-free,
+arena-backed rewrites of the existing reference implementations — public
+surface unchanged.
 
 ---
 

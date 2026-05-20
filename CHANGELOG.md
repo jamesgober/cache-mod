@@ -19,6 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-05-20
+
+### Added
+
+- Public `TtlCache<K, V>` — bounded, thread-safe cache with per-entry time-to-live and lazy expiry. Each entry stamped with a deadline at insert time; expired entries are removed lazily on `get` / `contains_key` / `len`. On overflow the entry with the **soonest expiration** is evicted, which naturally prefers already-expired entries over live ones.
+- `TtlCache::insert_with_ttl(&self, key, value, ttl)` — per-call TTL override that ignores the cache default for that one entry.
+- Constructors `TtlCache::new(usize, Duration) -> Result<Self, CacheError>` and `TtlCache::with_capacity(NonZeroUsize, Duration) -> Self` mirroring `LruCache` / `LfuCache`.
+- 13 integration tests covering: zero-capacity rejection, in-window get, lazy expiry through `get` / `contains_key` / `len`, per-call TTL override, soonest-expiry-first eviction, preference for already-expired entries over live ones, stale-as-absent on overwrite, live-update returning the old value, removal, clear, and `Send + Sync`. 4 new doctests on the type + both constructors + `insert_with_ttl`.
+
+### Changed
+
+- Crate-level docs in `src/lib.rs` updated to list `LruCache`, `LfuCache`, and `TtlCache` as the shipped reference implementations; trajectory clarified to point TinyLFU and `SizedCache` at 0.5.0.
+- `Cargo.toml`: version `0.3.0` → `0.4.0`.
+
+### Fixed
+
+### Security
+
+---
+
 ## [0.3.0] - 2026-05-20
 
 ### Added
@@ -75,7 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.3.0
 [0.2.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.2.0
 [0.1.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.1.0
