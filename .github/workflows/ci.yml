@@ -30,9 +30,31 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}-${{ matrix.rust }}
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-features
-      - run: cargo doc --no-deps --all-features
+
+      # MSRV row: verify the library alone compiles on the declared MSRV.
+      # Dev-dependencies (criterion, proptest) are intentionally not loaded —
+      # they are free to have higher MSRVs without violating the library's
+      # MSRV promise. This is the same pattern config-lib uses.
+      - name: MSRV check (library only)
+        if: matrix.rust == '1.75.0'
+        run: cargo check --lib --all-features
+
+      # Stable row: full fmt / clippy / test / doc sweep including dev-deps,
+      # integration tests, doctests, property tests, and benches.
+      - name: fmt
+        if: matrix.rust == 'stable'
+        run: cargo fmt --all -- --check
+      - name: clippy (all features)
+        if: matrix.rust == 'stable'
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: clippy (no default features)
+        if: matrix.rust == 'stable'
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+      - name: test
+        if: matrix.rust == 'stable'
+        run: cargo test --all-features
+      - name: doc
+        if: matrix.rust == 'stable'
+        run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"

@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CI: MSRV row (Rust 1.75) now runs `cargo check --lib --all-features` instead of the full clippy/test/doc sweep. Dev-dependencies (criterion 0.5 → clap_builder 4.6) transitively require `edition2024` (Rust 1.85+), which the MSRV toolchain can't parse. The library itself still builds cleanly on 1.75; the build-tool MSRVs are independent of the library's MSRV promise. Same pattern config-lib uses.
+
 ### Security
 
 ---
