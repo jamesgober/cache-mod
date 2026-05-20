@@ -55,3 +55,17 @@ Fast-track. No slow-stepping:
 - 0.9.0 - feature-complete, hardening
 - 0.9.x - audit findings
 - 1.0.0 - stable
+
+## Release discipline (mandatory)
+
+For each main update that is ready to push and includes a version change:
+
+- Write a private release log at `.dev/release/v<version>.md`
+- Follow the release structure used in metrics-lib style releases (clear summary, categorized changes, verification status)
+- Keep release text public-safe: do not include `.dev/` links or references intended for public release notes
+- Update versioned artifacts together: `Cargo.toml`, `CHANGELOG.md`, and docs that describe API/behavior
+
+Exception policy:
+
+- Do not backport baseline CI failures into `0.1.0`
+- Fix baseline CI failures in the next version (`0.2.0`)

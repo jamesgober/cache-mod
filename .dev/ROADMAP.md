@@ -4,6 +4,16 @@ Fast-track. No slow-stepping.
 
 ---
 
+## Release process (every versioned main update)
+
+- [ ] Version updated in `Cargo.toml`
+- [ ] Version notes updated in `CHANGELOG.md`
+- [ ] Documentation updated for API and behavior accuracy
+- [ ] Private release log written to `.dev/release/v<version>.md`
+- [ ] Release log is public-safe (no `.dev/` links/references)
+
+---
+
 ## Phase 0.1.0 - Scaffold (done)
 
 - [x] Repository created
@@ -30,6 +40,7 @@ Skill areas in scope:
 - [ ] Module structure laid out
 - [ ] Error type defined
 - [ ] First end-to-end smoke test passing
+- [ ] Resolve baseline CI failures from run 26157634322 (carry-forward from 0.1.0)
 - [ ] CHANGELOG updated
 - [ ] `.dev/release/v0.2.0.md` written
 

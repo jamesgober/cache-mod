@@ -6,8 +6,8 @@
 //!
 //! # Status
 //!
-//! Early scaffolding. Public API not yet defined. See [the repository](https://github.com/jamesgober/cache-mod)
-//! and .dev/ROADMAP.md for the milestone plan.
+//! Early scaffolding. Public API not yet defined. See
+//! [the repository](https://github.com/jamesgober/cache-mod) for the milestone plan.
 //!
 //! # License
 //!
