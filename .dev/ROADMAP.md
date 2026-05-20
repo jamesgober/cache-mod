@@ -40,7 +40,7 @@ Skill areas in scope:
 - [ ] Module structure laid out
 - [ ] Error type defined
 - [ ] First end-to-end smoke test passing
-- [ ] Resolve baseline CI failures from run 26157634322 (carry-forward from 0.1.0)
+- [x] Resolve baseline CI failures from run 26157634322 (carry-forward from 0.1.0)
 - [ ] CHANGELOG updated
 - [ ] `.dev/release/v0.2.0.md` written
 

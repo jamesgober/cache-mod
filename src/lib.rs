@@ -1,4 +1,4 @@
-﻿//! # cache-mod
+//! # cache-mod
 //!
 //! HIGH-PERFORMANCE IN-PROCESS CACHING
 //!
