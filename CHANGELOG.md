@@ -11,7 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/API.md` — complete public API reference with signatures, contracts, and code examples for every public item.
+- `docs/README.md` — documentation index with release archive table and quick links.
+- `docs/release/` — public archive of per-version release notes (v0.1.0 → v0.5.0). Each file is public-safe and matches what is posted to GitHub Releases.
+
 ### Changed
+
+- README: removed the stale `**Edition:** 2024.` line (the crate is on edition 2021) and added a "Documentation" section linking to `docs/API.md`, `docs/README.md`, `CHANGELOG.md`, `REPS.md`, and `docs.rs`.
+- `.gitignore` now ignores the entire `.dev/` folder. Earlier rules only ignored `.dev/scratch/` and `.dev/tmp/`; `.dev/PROMPT.md`, `.dev/DIRECTIVES.md`, `.dev/ROADMAP.md`, and `.dev/release/` were tracked. `.dev/` is private working state — release notes that should be public now live at `docs/release/`.
+- Untracked the entire historical `.dev/` directory tree (`git rm -r --cached .dev/`) so the next commit removes those files from the GitHub-visible tree. Files remain in past commit history; if a history scrub is needed that is a separate `git filter-repo` operation.
 
 ### Fixed
 

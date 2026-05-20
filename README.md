@@ -16,16 +16,6 @@
 
 <p align="center">Multiple eviction policies (LRU, LFU, TinyLFU, TTL, size-bounded). Async-safe, lock-minimized internals. Typed key-value API. No external store dependency.</p>
 
----
-
-## Status
-
-**Active development.** Foundation milestone (0.2.0) shipped. On the path to 1.0.
-
-The public API is not yet frozen. Pin specific versions; expect additive (and occasionally breaking) changes pre-1.0.
-
----
-
 ## What it does
 
 High-performance in-process caching with multiple eviction policies (LRU, LFU, TinyLFU, TTL, size-bounded). Async-safe, lock-minimized internals. Typed key-value API. No dependency on any external store.
@@ -83,11 +73,21 @@ land in 0.6.0 — public surface unchanged.
 
 ---
 
+## Documentation
+
+- **[API Reference](docs/API.md)** — every public item, with signature, contract, and code examples.
+- **[Docs index](docs/README.md)** — release archive + quick links.
+- **[CHANGELOG](CHANGELOG.md)** — per-version diff log.
+- **[REPS standards](REPS.md)** — quality discipline this crate is held to.
+- Machine-rendered rustdoc: **[docs.rs/cache-mod](https://docs.rs/cache-mod)**.
+
+---
+
 ## Standards
 
 - **REPS** governs every decision. See [REPS.md](REPS.md).
 - **MSRV:** Rust 1.75.
-- **Edition:** 2024.
+- **Edition:** 2021.
 - **Cross-platform:** Linux, macOS, Windows.
 
 ---
