@@ -36,30 +36,33 @@ High-performance in-process caching with multiple eviction policies (LRU, LFU, T
 
 ```toml
 [dependencies]
-cache-mod = "0.2"
+cache-mod = "0.3"
 ```
 
 ```rust
-use cache_mod::{Cache, LruCache};
+use cache_mod::{Cache, LfuCache, LruCache};
 
-let cache: LruCache<&'static str, u32> = LruCache::new(64).expect("capacity > 0");
+// LRU — evicts the least-recently-accessed entry on overflow.
+let lru: LruCache<&'static str, u32> = LruCache::new(64).expect("capacity > 0");
+lru.insert("requests", 1);
+assert_eq!(lru.get(&"requests"), Some(1));
 
-cache.insert("requests", 1);
-cache.insert("errors", 0);
-
-assert_eq!(cache.get(&"requests"), Some(1));
-assert_eq!(cache.len(), 2);
+// LFU — evicts the lowest-counter entry on overflow.
+let lfu: LfuCache<&'static str, u32> = LfuCache::new(64).expect("capacity > 0");
+lfu.insert("requests", 1);
+assert_eq!(lfu.get(&"requests"), Some(1));
 ```
 
 ### What's shipped
 
 - `Cache<K, V>` trait — the common read / write / evict contract.
 - `LruCache<K, V>` — bounded, thread-safe Least-Recently-Used cache.
+- `LfuCache<K, V>` — bounded, thread-safe Least-Frequently-Used cache.
 - `CacheError` — error type returned by constructors.
 
-LFU, TinyLFU, TTL, and size-bounded variants land in subsequent minors. The
-lock-free, arena-backed `LruCache` rewrite lands in 0.5.0 without changing
-the public surface.
+TinyLFU, TTL, and size-bounded variants land in subsequent minors. The
+lock-free, arena-backed rewrites of `LruCache` and `LfuCache` land in 0.5.0
+without changing the public surface.
 
 ---
 

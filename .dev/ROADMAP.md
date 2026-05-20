@@ -46,13 +46,38 @@ Skill areas in scope:
 
 ---
 
-## Phase 0.5.0 - Implementation
+## Phase 0.3.0 - LFU eviction policy (done)
 
+- [x] `LfuCache<K, V>` reference implementation (Mutex-guarded, O(n) eviction scan)
+- [x] Eviction semantics: minimum counter, ties broken by least-recently-accessed
+- [x] `contains_key` honors Cache-trait non-promotion contract
+- [x] Integration tests covering counter behavior and tie-break
+- [x] Doctest examples on type + constructors
+- [x] CHANGELOG updated
+- [x] README updated to reflect shipped policies
+- [x] `.dev/release/v0.3.0.md` written
+
+---
+
+## Phase 0.4.0 - TTL eviction policy
+
+- [ ] `TtlCache<K, V>` reference implementation with lazy expiry on access
+- [ ] Per-entry expiration; bounded capacity for hard ceiling
+- [ ] Optional per-call TTL override (`insert_with_ttl`)
+- [ ] Integration tests with controllable clock
+- [ ] CHANGELOG updated
+- [ ] `.dev/release/v0.4.0.md` written
+
+---
+
+## Phase 0.5.0 - TinyLFU + implementation quality
+
+- [ ] `TinyLfuCache<K, V>` — admission filter (Count-Min Sketch) + LFU main
+- [ ] Lock-free arena-backed rewrite of `LruCache` and `LfuCache` internals (public API unchanged)
+- [ ] `SizedCache<K, V>` — byte-bound capacity policy (composes with primary policies)
 - [ ] All public API methods implemented (no `todo!()`)
 - [ ] Property tests for state machines / invariants
-- [ ] Integration tests
-- [ ] Basic benchmarks
-- [ ] Documentation drafted
+- [ ] Basic benchmarks (Criterion)
 - [ ] No `unwrap` / `expect` outside of tests
 - [ ] CHANGELOG updated
 - [ ] `.dev/release/v0.5.0.md` written

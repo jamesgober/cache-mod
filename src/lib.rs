@@ -7,11 +7,11 @@
 //!
 //! # Status
 //!
-//! Foundation milestone (0.2.0). The public API surface is defined: the
-//! [`Cache`] trait, the [`LruCache`] reference implementation, and the
-//! [`CacheError`] error type. LFU, TinyLFU, TTL, and size-bounded eviction
-//! policies land in subsequent minors. The API is not yet frozen — pin
-//! exact versions until 1.0.
+//! The public API surface is defined: the [`Cache`] trait, the [`CacheError`]
+//! error type, and two reference cache implementations — [`LruCache`]
+//! (Least-Recently-Used, 0.2.0) and [`LfuCache`] (Least-Frequently-Used,
+//! 0.3.0). TinyLFU, TTL, and size-bounded eviction policies land in
+//! subsequent minors. The API is not yet frozen — pin exact versions until 1.0.
 //!
 //! # Quick start
 //!
@@ -52,11 +52,15 @@ mod cache;
 mod error;
 
 #[cfg(feature = "std")]
+mod lfu;
+#[cfg(feature = "std")]
 mod lru;
 
 pub use cache::Cache;
 pub use error::CacheError;
 
+#[cfg(feature = "std")]
+pub use lfu::LfuCache;
 #[cfg(feature = "std")]
 pub use lru::LruCache;
 

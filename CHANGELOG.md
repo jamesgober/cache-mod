@@ -19,6 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-05-20
+
+### Added
+
+- Public `LfuCache<K, V>` — bounded, thread-safe Least-Frequently-Used cache. Each entry carries a counter that increments on every `get` / `insert` of an already-present key. On overflow, the entry with the lowest counter is evicted; ties are broken in favour of the least-recently-accessed entry. Same `&self`-everywhere shape as `LruCache`: `Send + Sync`, poison-tolerant `Mutex`, no new dependencies.
+- Constructors `LfuCache::new(usize) -> Result<Self, CacheError>` and `LfuCache::with_capacity(NonZeroUsize) -> Self` mirroring `LruCache`.
+- Eight integration tests covering counter increments, LRU tie-break, `contains_key` non-promotion, replacement, removal, clear, capacity preservation, and `Send + Sync`.
+
+### Changed
+
+- Crate-level docs in `src/lib.rs` updated to list `LruCache` and `LfuCache` as the shipped reference implementations.
+- `Cargo.toml`: version `0.2.0` → `0.3.0`.
+
+### Fixed
+
+### Security
+
+---
+
 ## [0.2.0] - 2026-05-20
 
 ### Added
@@ -56,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.3.0
 [0.2.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.2.0
 [0.1.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.1.0
