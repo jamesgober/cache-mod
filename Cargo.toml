@@ -14,10 +14,10 @@ description = "High-performance in-process caching with multiple eviction polici
 
 keywords = [
     "cache",
-    "lru",
+    "concurrent",
     "lfu",
     "ttl",
-    "rust"
+    "lru"
 ]
 
 categories = [
