@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Security
+
+---
+
+## [0.5.1] - 2026-05-20
+
+Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update` reads no new public symbols. The user-visible improvements are concentrated on the crates.io / GitHub side: cleaner README, proper API reference, public release archive, and an MSRV CI fix that landed without a release marker.
+
+### Added
+
 - `docs/API.md` — complete public API reference with signatures, contracts, and code examples for every public item.
 - `docs/README.md` — documentation index with release archive table and quick links.
 - `docs/release/` — public archive of per-version release notes (v0.1.0 → v0.5.0). Each file is public-safe and matches what is posted to GitHub Releases.
@@ -19,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - README: removed the stale `**Edition:** 2024.` line (the crate is on edition 2021) and added a "Documentation" section linking to `docs/API.md`, `docs/README.md`, `CHANGELOG.md`, `REPS.md`, and `docs.rs`.
 - `.gitignore` now ignores the entire `.dev/` folder. Earlier rules only ignored `.dev/scratch/` and `.dev/tmp/`; `.dev/PROMPT.md`, `.dev/DIRECTIVES.md`, `.dev/ROADMAP.md`, and `.dev/release/` were tracked. `.dev/` is private working state — release notes that should be public now live at `docs/release/`.
-- Untracked the entire historical `.dev/` directory tree (`git rm -r --cached .dev/`) so the next commit removes those files from the GitHub-visible tree. Files remain in past commit history; if a history scrub is needed that is a separate `git filter-repo` operation.
+- Untracked the entire historical `.dev/` directory tree (`git rm -r --cached .dev/`) so the commit that ships 0.5.1 removes those files from the GitHub-visible tree. Files remain in past commit history; a full history scrub is a separate `git filter-repo` operation if ever needed.
 
 ### Fixed
 
@@ -129,7 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.1
 [0.5.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.0
 [0.4.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.3.0
