@@ -26,7 +26,7 @@ High-performance in-process caching with multiple eviction policies (LRU, LFU, T
 
 ```toml
 [dependencies]
-cache-mod = "0.5"
+cache-mod = "1"
 ```
 
 ```rust
@@ -58,7 +58,7 @@ let sized: SizedCache<&'static str, Vec<u8>> =
 sized.insert("payload", vec![0u8; 256]);
 ```
 
-### What's shipped
+### FEATURES
 
 - `Cache<K, V>` trait — the common read / write / evict contract.
 - `LruCache<K, V>` — bounded, thread-safe Least-Recently-Used cache.
@@ -68,14 +68,17 @@ sized.insert("payload", vec![0u8; 256]);
 - `SizedCache<K, V>` — capacity bound is total byte-weight across entries.
 - `CacheError` — error type returned by constructors.
 
-Lock-free, arena-backed rewrites of the existing reference implementations
-land in 0.6.0 — public surface unchanged.
+Arena-backed internals (O(1) for LRU/TinyLFU/Sized, O(log n) for LFU)
+and sharded concurrency (up to 16 shards for entry-bounded caches) ship
+under the same public surface. Future internal improvements within the
+1.x line will be source-compatible.
 
 ---
 
 ## Documentation
 
 - **[API Reference](docs/API.md)** — every public item, with signature, contract, and code examples.
+- **[Stability promise](docs/STABILITY.md)** — frozen 1.0 surface + SemVer commitments.
 - **[Docs index](docs/README.md)** — release archive + quick links.
 - **[CHANGELOG](CHANGELOG.md)** — per-version diff log.
 - **[REPS standards](REPS.md)** — quality discipline this crate is held to.

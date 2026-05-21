@@ -25,7 +25,7 @@ const MIN_SKETCH_WIDTH: usize = 64;
 /// value is in the cache. The admission filter may reject it. Callers that
 /// need strict insertion guarantees should use `LruCache` or `LfuCache`.
 ///
-/// # Implementation (0.7.0)
+/// # Implementation
 ///
 /// Sharded into up to 16 independent arenas keyed by hash of `K`. **Each
 /// shard owns its own Count-Min Sketch** — the frequency signal is

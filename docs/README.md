@@ -19,6 +19,7 @@
 ## Contents
 
 - **[API Reference](./API.md)** — complete public surface with signatures, contracts, and code examples for every public item.
+- **[Stability promise](./STABILITY.md)** — frozen 1.0 surface + SemVer commitments.
 - **[Release notes](./release/)** — per-version write-ups, paired with the matching GitHub Releases page.
 
 ## Quick links
@@ -33,6 +34,7 @@
 
 | Version | Date       | Notes                                                            |
 | ------- | ---------- | ---------------------------------------------------------------- |
+| 1.0.0   | 2026-05-21 | **Stable API freeze** — strict SemVer, STABILITY.md committed — [v1.0.0](./release/v1.0.0.md) |
 | 0.9.0   | 2026-05-21 | Hardening + audit: must_use, no-unsafe guarantee, 91 tests — [v0.9.0](./release/v0.9.0.md) |
 | 0.7.0   | 2026-05-20 | Sharded internals: up to 16-way concurrent throughput — [v0.7.0](./release/v0.7.0.md) |
 | 0.6.0   | 2026-05-20 | Arena-backed internals: O(1) LRU/TinyLFU/Sized, O(log n) LFU — [v0.6.0](./release/v0.6.0.md) |

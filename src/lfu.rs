@@ -19,7 +19,7 @@ use crate::util::MutexExt;
 /// [`contains_key`](Cache::contains_key) is a query and does not increment
 /// the counter or touch access order.
 ///
-/// # Implementation (0.7.0)
+/// # Implementation
 ///
 /// Sharded into up to 16 independent stores keyed by hash of `K`. Each
 /// shard pairs a `HashMap<K, Entry<V>>` for value lookup with a

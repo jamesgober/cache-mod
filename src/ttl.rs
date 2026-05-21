@@ -25,7 +25,7 @@ const FAR_FUTURE: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 100);
 /// Both [`insert`](Cache::insert) and [`insert_with_ttl`](TtlCache::insert_with_ttl)
 /// reset the deadline on the affected entry — writes always re-arm the timer.
 ///
-/// # Implementation (0.7.0)
+/// # Implementation
 ///
 /// Sharded into up to 16 independent stores keyed by hash of `K`. Each
 /// shard owns its own `HashMap` and applies expiry / overflow eviction

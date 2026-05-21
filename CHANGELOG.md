@@ -19,6 +19,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] - 2026-05-21
+
+API freeze. The public surface that landed across 0.2.0 – 0.9.0 is now committed under strict SemVer per [`docs/STABILITY.md`](docs/STABILITY.md). Library code is byte-identical to 0.9.0 — every existing call-site compiles and behaves the same.
+
+### Added
+
+- `docs/STABILITY.md` — the stability promise. Enumerates every committed symbol (the `Cache` trait, `CacheError`, the five cache types and their constructors / methods, `VERSION`), the behavioural contracts (access semantics, capacity invariant, eviction rules, `Send + Sync` predicates, no-`unsafe` / no-`panic` guarantees), MSRV policy, feature-flag stability, and an explicit "not promised" list of internals that may evolve in the 1.x line.
+
+### Changed
+
+- Crate-level rustdoc (`src/lib.rs`) Status section updated to declare the API frozen as of 1.0.0; no more pre-1.0 caveats.
+- `README.md`, `docs/API.md` updated to point at `STABILITY.md` and recommend `cache-mod = "1"` pinning. Pre-1.0 language ("not yet frozen", "expect breaking changes", "0.5 line") removed.
+- `docs/API.md`: expanded examples — each cache type now has multiple worked use-case examples beyond the one-shot reference (LRU: ordering + concurrent + replacement; LFU: ordering + tie-break + non-promotion; TTL: per-call override + lazy expiry + soonest-expiry eviction; TinyLFU: warm-up + defensive miss + existing-key bypass; SizedCache: payload weighing + heterogeneous sizes + oversized rejection + accessor examples).
+- `docs/API.md` Concurrency section corrected — sharded for entry-bounded caches (≥ 32 entries), single-`Mutex` for `SizedCache` regardless of size. Old "0.5 line" / "land in 0.6.0" copy removed.
+- Per-cache rustdoc cleanup: stale "0.6.0 implementation", "0.7.0 implementation", "lock-strategy upgrade lands in 0.7.0" headers replaced with a plain "Implementation" heading. Implementation detail still documented; just no more dangling version pins.
+- `src/sized.rs` rustdoc explicitly notes that `SizedCache` is intentionally unsharded and explains why.
+- `Cargo.toml`: version `0.9.0` → `1.0.0`.
+
+### Verified
+
+- All 9 unit + 47 integration + 17 property + 18 doctests pass. **91 tests total.**
+- `cargo fmt --all -- --check` clean.
+- `cargo clippy --all-targets --all-features -- -D warnings` clean.
+- `cargo clippy --all-targets --no-default-features -- -D warnings` clean.
+- `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS="-D warnings"` clean.
+- REPS lint surface in `src/lib.rs` honored: no `unsafe`, no `unwrap`, no `expect`, no `print_stdout` / `print_stderr` / `dbg!`, no `todo!` / `unimplemented!`.
+
+---
+
 ## [0.9.0] - 2026-05-21
 
 Hardening + audit milestone. No new features. The 0.7.0 surface is locked down with explicit contracts, expanded test coverage, and a license / advisory gate. Skipped 0.8.0 — the `SizedCache` sharding redesign hasn't surfaced as a real-world bottleneck and forcing it through artificially would have been busywork.
@@ -110,8 +139,8 @@ Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update
 ### Changed
 
 - README: removed the stale `**Edition:** 2024.` line (the crate is on edition 2021) and added a "Documentation" section linking to `docs/API.md`, `docs/README.md`, `CHANGELOG.md`, `REPS.md`, and `docs.rs`.
-- `.gitignore` now ignores the entire `.dev/` folder. Earlier rules only ignored `.dev/scratch/` and `.dev/tmp/`; `.dev/PROMPT.md`, `.dev/DIRECTIVES.md`, `.dev/ROADMAP.md`, and `.dev/release/` were tracked. `.dev/` is private working state — release notes that should be public now live at `docs/release/`.
-- Untracked the entire historical `.dev/` directory tree (`git rm -r --cached .dev/`) so the commit that ships 0.5.1 removes those files from the GitHub-visible tree. Files remain in past commit history; a full history scrub is a separate `git filter-repo` operation if ever needed.
+- `.gitignore` now ignores the private internal working directory. Earlier rules only covered scratch and temp subpaths, so internal planning and release-working files were still tracked. Public release notes remain under `docs/release/`.
+- Untracked the historical internal working directory so the 0.5.1 commit removed those files from the GitHub-visible tree at HEAD. Files remain in past commit history; a full history scrub is a separate `git filter-repo` operation if ever needed.
 
 ### Fixed
 
@@ -221,7 +250,8 @@ Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/jamesgober/cache-mod/releases/tag/v1.0.0
 [0.9.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.9.0
 [0.7.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.7.0
 [0.6.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.6.0

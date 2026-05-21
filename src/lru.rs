@@ -15,7 +15,7 @@ use crate::util::MutexExt;
 /// [`get`](Cache::get) and [`insert`](Cache::insert) count as accesses and
 /// promote the affected entry to most-recently-used.
 ///
-/// # Implementation (0.7.0)
+/// # Implementation
 ///
 /// Sharded into up to 16 independent arenas keyed by hash of `K`. Each shard
 /// owns its own doubly-linked list, free-list, and `HashMap`, with its own

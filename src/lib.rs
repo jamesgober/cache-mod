@@ -7,15 +7,15 @@
 //!
 //! # Status
 //!
-//! The public API surface is feature-complete: the [`Cache`] trait, the
-//! [`CacheError`] error type, and five reference cache implementations —
+//! **Stable.** As of 1.0.0 the public API surface is frozen under strict
+//! SemVer — see `docs/STABILITY.md` for the full enumeration. Five
+//! reference cache implementations sit behind a common [`Cache`] trait:
 //! [`LruCache`] (Least-Recently-Used), [`LfuCache`] (Least-Frequently-Used),
-//! [`TtlCache`] (Time-To-Live, lazy expiry), [`TinyLfuCache`] (Count-Min Sketch
-//! admission filter + LRU main), and [`SizedCache`] (byte-bound capacity).
-//! Internals are arena-backed (0.6.0) and sharded for concurrent throughput
-//! (0.7.0). The API is currently in the 0.9.x hardening cycle; it is **not**
-//! yet frozen, but no further breaking changes are planned before the 1.0
-//! release. Pin exact versions until 1.0 is tagged.
+//! [`TtlCache`] (Time-To-Live, lazy expiry), [`TinyLfuCache`] (Count-Min
+//! Sketch admission filter + LRU main), and [`SizedCache`] (byte-bound
+//! capacity). Internals are arena-backed and sharded for concurrent
+//! throughput; the public surface does not depend on either choice and
+//! will not change as those internals evolve in the 1.x line.
 //!
 //! # Guarantees
 //!
@@ -57,6 +57,7 @@
 #![doc(html_root_url = "https://docs.rs/cache-mod")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![deny(warnings)]
 #![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(unused_must_use)]

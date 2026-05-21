@@ -57,7 +57,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-cache-mod = "0.5"
+cache-mod = "1"
 ```
 
 #### Install via terminal
@@ -66,7 +66,7 @@ cache-mod = "0.5"
 cargo add cache-mod
 ```
 
-**MSRV:** Rust `1.75`. **Edition:** `2021`. **Default features:** `std`.
+**MSRV:** Rust `1.75`. **Edition:** `2021`. **Default features:** `std`. **API:** frozen — see [`STABILITY.md`](./STABILITY.md).
 
 <hr><br>
 <a href="#top">&uarr; <b>TOP</b></a>
@@ -268,6 +268,9 @@ let cache: LruCache<String, u32> = LruCache::new(128).expect("capacity > 0");
 
 #### `LruCache::with_capacity(capacity: NonZeroUsize) -> Self`
 
+**Parameters:**
+- `capacity: NonZeroUsize` — maximum number of entries. Sharded into up to 16 shards once it reaches 32; smaller caches stay single-shard.
+
 Infallible constructor for callers that already hold a `NonZeroUsize`.
 
 ```rust
@@ -277,7 +280,7 @@ let cap = NonZeroUsize::new(64).expect("64 != 0");
 let cache: LruCache<String, u32> = LruCache::with_capacity(cap);
 ```
 
-Full LRU example covering eviction:
+##### Example 1: LRU eviction order
 
 ```rust
 use cache_mod::{Cache, LruCache};
@@ -296,6 +299,45 @@ assert_eq!(cache.get(&1), Some("one"));
 assert_eq!(cache.get(&3), Some("three"));
 ```
 
+##### Example 2: Shared across threads
+
+```rust
+use std::sync::Arc;
+use std::thread;
+use cache_mod::{Cache, LruCache};
+
+let cache: Arc<LruCache<u32, u32>> = Arc::new(LruCache::new(64).expect("capacity > 0"));
+
+let handles: Vec<_> = (0..8u32).map(|t| {
+    let cache = Arc::clone(&cache);
+    thread::spawn(move || {
+        for i in 0..16u32 {
+            let _ = cache.insert(t * 16 + i, i);
+        }
+    })
+}).collect();
+for h in handles { let _ = h.join(); }
+
+// Capacity invariant holds across concurrent inserts.
+assert!(cache.len() <= 64);
+```
+
+##### Example 3: Replacement semantics
+
+```rust
+use cache_mod::{Cache, LruCache};
+
+let cache: LruCache<&'static str, u32> = LruCache::new(16).expect("capacity > 0");
+
+// First insert: no prior value, returns None.
+assert_eq!(cache.insert("counter", 1), None);
+
+// Subsequent insert with the same key: returns the prior value.
+assert_eq!(cache.insert("counter", 2), Some(1));
+assert_eq!(cache.insert("counter", 3), Some(2));
+assert_eq!(cache.get(&"counter"), Some(3));
+```
+
 <br>
 
 ### `LfuCache`
@@ -311,9 +353,9 @@ impl<K: Eq + Hash + Clone, V: Clone> LfuCache<K, V> {
 }
 ```
 
-Constructors mirror [`LruCache`](#lrucache) exactly.
+**Parameters:** `LfuCache::new` and `LfuCache::with_capacity` take the same arguments as their `LruCache` counterparts — `capacity: usize` (or `NonZeroUsize`) is the maximum number of entries.
 
-#### LFU eviction with LRU tie-break
+##### Example 1: LFU eviction by counter
 
 ```rust
 use cache_mod::{Cache, LfuCache};
@@ -332,7 +374,41 @@ assert_eq!(cache.get(&1), Some(10));
 assert_eq!(cache.get(&3), Some(30));
 ```
 
-If two entries share the minimum counter (e.g. both have been accessed once), the older entry is evicted first — `LfuCache` keeps the fresher of two equally-cold entries.
+##### Example 2: Tie-break by LRU
+
+If two entries share the minimum counter (e.g. both have been accessed once), the **older** entry is evicted first — `LfuCache` keeps the fresher of two equally-cold entries.
+
+```rust
+use cache_mod::{Cache, LfuCache};
+
+let cache: LfuCache<u32, &str> = LfuCache::new(2).expect("capacity > 0");
+
+cache.insert(1, "a");      // counter = 1
+cache.insert(2, "b");      // counter = 1 (tied with 1)
+
+// Both at counter = 1; key 1 was accessed less recently.
+cache.insert(3, "c");      // evicts 1 (LRU tie-break)
+
+assert_eq!(cache.get(&1), None);
+assert_eq!(cache.get(&2), Some("b"));
+assert_eq!(cache.get(&3), Some("c"));
+```
+
+##### Example 3: `contains_key` does not increment the counter
+
+`contains_key` is a query and never touches the counter — useful for diagnostic checks that should not bias the eviction policy.
+
+```rust
+use cache_mod::{Cache, LfuCache};
+
+let cache: LfuCache<u32, &str> = LfuCache::new(16).expect("capacity > 0");
+cache.insert(1, "a");
+
+// Inspect membership without bumping the counter:
+for _ in 0..1000 {
+    assert!(cache.contains_key(&1));
+}
+```
 
 <br>
 
@@ -364,17 +440,72 @@ let cache: TtlCache<String, u32> =
 
 #### `TtlCache::insert_with_ttl(&self, key: K, value: V, ttl: Duration) -> Option<V>`
 
-Per-call TTL override. The deadline is `now + ttl`. Returns the previously-stored live value if `key` was present and not yet expired; otherwise returns `None` (an expired-but-not-yet-cleaned entry is treated as absent).
+**Parameters:**
+- `key: K` — the cache key.
+- `value: V` — the value to store.
+- `ttl: Duration` — per-call TTL override. The deadline is `now + ttl`, ignoring the cache's default TTL for this insert only.
+
+Returns the previously-stored **live** value if `key` was present and not yet expired; otherwise returns `None` (an expired-but-not-yet-cleaned entry is treated as absent).
+
+##### Example 1: Per-call TTL override
+
+```rust
+use std::time::Duration;
+use cache_mod::{Cache, TtlCache};
+
+let cache: TtlCache<&'static str, u32> =
+    TtlCache::new(16, Duration::from_secs(300)).expect("capacity > 0");  // default 5 min
+
+// Most entries get the default TTL...
+cache.insert("session", 42);
+
+// ...but some need a shorter lifetime.
+cache.insert_with_ttl("flash-token", 7, Duration::from_secs(5));
+
+// ...or a longer one.
+cache.insert_with_ttl("remember-me", 99, Duration::from_secs(30 * 24 * 60 * 60));
+```
+
+##### Example 2: Lazy expiry on access
+
+```rust
+use std::thread;
+use std::time::Duration;
+use cache_mod::{Cache, TtlCache};
+
+let cache: TtlCache<u32, u32> =
+    TtlCache::new(16, Duration::from_millis(1)).expect("capacity > 0");
+
+cache.insert(1, 100);
+assert_eq!(cache.get(&1), Some(100));
+
+// Wait past the deadline.
+thread::sleep(Duration::from_millis(10));
+
+// `get` cleans up the expired entry.
+assert_eq!(cache.get(&1), None);
+assert!(!cache.contains_key(&1));
+```
+
+##### Example 3: Soonest-expiry eviction
+
+When the cache is full, the entry closest to expiring is evicted first.
 
 ```rust
 use std::time::Duration;
 use cache_mod::{Cache, TtlCache};
 
 let cache: TtlCache<u32, u32> =
-    TtlCache::new(4, Duration::from_secs(60)).expect("capacity > 0");
+    TtlCache::new(2, Duration::from_secs(60)).expect("capacity > 0");
 
-cache.insert_with_ttl(1, 10, Duration::from_secs(5));
-assert_eq!(cache.get(&1), Some(10));
+cache.insert_with_ttl(1, 10, Duration::from_secs(60));     // ~1 minute
+cache.insert_with_ttl(2, 20, Duration::from_secs(3600));   // ~1 hour
+
+// Adding 3 evicts 1 (soonest expiry).
+cache.insert_with_ttl(3, 30, Duration::from_secs(7200));
+assert_eq!(cache.get(&1), None);
+assert_eq!(cache.get(&2), Some(20));
+assert_eq!(cache.get(&3), Some(30));
 ```
 
 **TTL overflow guard.** `now + ttl` is computed with `Instant::checked_add`. If the addition would overflow (e.g. `Duration::MAX`), the deadline is clamped to roughly 100 years from now. No panics on absurd input.
@@ -394,18 +525,22 @@ impl<K: Eq + Hash + Clone, V: Clone> TinyLfuCache<K, V> {
 }
 ```
 
+**Parameters:** `TinyLfuCache::new` and `TinyLfuCache::with_capacity` take the same arguments as the LRU/LFU constructors — `capacity` is the maximum number of entries.
+
 **Important contract deviation.** A successful `insert` call **does not guarantee** the value is in the cache. The admission filter may reject it. If your code path needs strict insertion guarantees, use `LruCache` or `LfuCache`.
 
-Sketch parameters (reference implementation):
+Sketch parameters (internal, may evolve in future minor releases):
 
 - depth-4 Count-Min Sketch, `u8` saturating counters
 - width = `max(64, 2 × capacity)` rounded to the next power of two
 - W-TinyLFU "aging" step: every `10 × capacity` increments, every counter is right-shifted by 1 — keeps the sketch responsive to workload shifts
 
+##### Example 1: Warming up the frequency signal
+
 ```rust
 use cache_mod::{Cache, TinyLfuCache};
 
-let cache: TinyLfuCache<&str, u32> = TinyLfuCache::new(256).expect("capacity > 0");
+let cache: TinyLfuCache<&'static str, u32> = TinyLfuCache::new(256).expect("capacity > 0");
 
 // Build up the frequency signal for "hot" before the cache fills.
 for _ in 0..32 {
@@ -414,6 +549,40 @@ for _ in 0..32 {
 }
 
 assert_eq!(cache.get(&"hot"), Some(1));
+```
+
+##### Example 2: Defensive cache-miss after insert
+
+Because admission can reject, code paths that need to know whether a value was actually cached should re-read after the insert.
+
+```rust
+use cache_mod::{Cache, TinyLfuCache};
+
+let cache: TinyLfuCache<u64, Vec<u8>> = TinyLfuCache::new(1024).expect("capacity > 0");
+
+fn observe(cache: &TinyLfuCache<u64, Vec<u8>>, id: u64, blob: Vec<u8>) -> Option<Vec<u8>> {
+    if let Some(v) = cache.get(&id) {
+        return Some(v);
+    }
+    let _ = cache.insert(id, blob);
+    cache.get(&id)         // `None` means admission rejected the value
+}
+```
+
+##### Example 3: Existing keys always update
+
+Admission only gates *new* keys. An update to an existing key bypasses the filter and behaves like a normal insert with the new value.
+
+```rust
+use cache_mod::{Cache, TinyLfuCache};
+
+let cache: TinyLfuCache<&'static str, u32> = TinyLfuCache::new(2).expect("capacity > 0");
+cache.insert("a", 1);
+cache.insert("b", 2);
+
+// Updating "a" always succeeds and returns the prior value.
+assert_eq!(cache.insert("a", 100), Some(1));
+assert_eq!(cache.get(&"a"), Some(100));
 ```
 
 <br>
@@ -435,39 +604,86 @@ impl<K: Eq + Hash + Clone, V: Clone> SizedCache<K, V> {
 
 #### `SizedCache::new(max_weight: usize, weigher: fn(&V) -> usize) -> Result<Self, CacheError>`
 
-Returns `CacheError::InvalidCapacity` if `max_weight == 0`. The weigher is a plain function pointer — captured-state closures would force `Box<dyn Fn>` indirection on every weigh call. If your weighing logic needs state, hoist it into the value type.
+**Parameters:**
+- `max_weight: usize` — the total byte-weight ceiling. Returns `CacheError::InvalidCapacity` if zero.
+- `weigher: fn(&V) -> usize` — pure function returning the weight of a value. Plain function pointer (not a closure) — captured state would force `Box<dyn Fn>` indirection on every weigh call. If your weighing logic needs state, hoist it into the value type.
+
+##### Example 1: Tracking payload bytes
 
 ```rust
 use cache_mod::{Cache, SizedCache};
 
 fn weigh(payload: &Vec<u8>) -> usize { payload.len() }
 
-let cache: SizedCache<&str, Vec<u8>> =
+let cache: SizedCache<&'static str, Vec<u8>> =
     SizedCache::new(1024, weigh).expect("max_weight > 0");
 
 cache.insert("payload", vec![0u8; 64]);
 assert_eq!(cache.total_weight(), 64);
 ```
 
-#### <span id="sizedcache-max_weight"></span>`SizedCache::max_weight(&self) -> usize`
+##### Example 2: Heterogeneous value sizes
 
-The configured byte-weight ceiling — same value as `Cache::capacity` for this type.
+```rust
+use cache_mod::{Cache, SizedCache};
 
-#### <span id="sizedcache-total_weight"></span>`SizedCache::total_weight(&self) -> usize`
+fn weigh(s: &String) -> usize { s.len() }
 
-The current sum of weights across live entries.
+let cache: SizedCache<&'static str, String> = SizedCache::new(100, weigh).expect("max_weight > 0");
 
-**Oversized values are silently rejected.** An entry whose own weight exceeds `max_weight` cannot be cached by any policy — `insert` returns `None` and the value is dropped.
+cache.insert("a", "x".repeat(40));   // weight = 40
+cache.insert("b", "y".repeat(30));   // weight = 30; total = 70
+assert_eq!(cache.total_weight(), 70);
+
+// Inserting 50 more bytes (total 120) would overflow. The LRU "a"
+// (40 bytes) gets evicted to make room: 30 + 50 = 80 ≤ 100.
+cache.insert("c", "z".repeat(50));
+assert_eq!(cache.total_weight(), 80);
+assert!(!cache.contains_key(&"a"));
+```
+
+##### Example 3: Oversized values are silently rejected
+
+An entry whose own weight exceeds `max_weight` cannot be cached. `insert` returns `None` and the value is dropped.
 
 ```rust
 use cache_mod::{Cache, SizedCache};
 
 fn weigh(v: &Vec<u8>) -> usize { v.len() }
+
 let cache: SizedCache<u32, Vec<u8>> = SizedCache::new(100, weigh).expect("max_weight > 0");
 
 // 200 bytes won't fit in a 100-byte cache. Drop silently.
 assert_eq!(cache.insert(1, vec![0u8; 200]), None);
 assert!(!cache.contains_key(&1));
+assert_eq!(cache.total_weight(), 0);
+```
+
+#### <span id="sizedcache-max_weight"></span>`SizedCache::max_weight(&self) -> usize`
+
+Returns the configured byte-weight ceiling — same value as `Cache::capacity` for this type.
+
+```rust
+use cache_mod::SizedCache;
+fn weigh(s: &String) -> usize { s.len() }
+let cache: SizedCache<u32, String> = SizedCache::new(4096, weigh).expect("max_weight > 0");
+assert_eq!(cache.max_weight(), 4096);
+```
+
+#### <span id="sizedcache-total_weight"></span>`SizedCache::total_weight(&self) -> usize`
+
+Returns the current sum of weights across all live entries.
+
+```rust
+use cache_mod::{Cache, SizedCache};
+fn weigh(s: &String) -> usize { s.len() }
+
+let cache: SizedCache<u32, String> = SizedCache::new(4096, weigh).expect("max_weight > 0");
+assert_eq!(cache.total_weight(), 0);
+
+cache.insert(1, "hello".to_string());
+cache.insert(2, "world!".to_string());
+assert_eq!(cache.total_weight(), 11);  // 5 + 6
 ```
 
 <br>
@@ -508,7 +724,9 @@ Both invariants are covered by `proptest`-driven property tests in `tests/proper
 
 ### Concurrency
 
-Every cache type is `Send + Sync` when `K: Send` and `V: Send` (and similarly for `Sync`). Methods take `&self`, so a single instance can be shared across threads — or held across `.await` points — without external locking. Internally each cache uses a single `Mutex<Inner>` in the 0.5 line; sharded or lock-free internals land in 0.6.0 without changing this public surface.
+Every cache type is `Send + Sync` when `K: Send` and `V: Send` (and similarly for `Sync`). Methods take `&self`, so a single instance can be shared across threads — or held across `.await` points — without external locking.
+
+Internally, four of the five cache types (`LruCache`, `LfuCache`, `TtlCache`, `TinyLfuCache`) shard their state across up to 16 independent `Mutex<Inner>` instances when capacity ≥ 32 entries — lock contention is bounded by per-shard traffic, not total cache traffic. `SizedCache` uses a single `Mutex<Inner>` regardless of size; sharding a byte budget produces a per-shard ceiling too tight for the typical "few large values" workload. See [`STABILITY.md`](./STABILITY.md) for the sharded-eviction approximation contract.
 
 ```rust
 use std::sync::Arc;
@@ -656,10 +874,10 @@ assert!(cache.total_weight() <= cache.max_weight());
 
 ## Notes
 
-- **Pre-1.0 API.** The public surface described above is feature-complete as of 0.5.0 but not yet frozen. Minor versions may break in the future. Pin exact versions and read the [CHANGELOG](../CHANGELOG.md).
-- **Lock-free internals.** All five cache types use `std::sync::Mutex` for internal coordination in the 0.5 line. Arena-backed, O(1) internals (and a sharded-lock or `crossbeam-epoch` lock-strategy upgrade) land in 0.6.0 without changing the public surface documented here.
-- **REPS.** Every public item is covered by rustdoc with at least one example. No `unsafe` is used anywhere in the crate. See [REPS.md](../REPS.md) for the project's quality discipline.
-- **Tests.** The crate ships 47 integration tests, 9 property tests (`proptest`), and 18 doctests — every public method has a working example that runs under `cargo test`.
+- **API frozen.** The public surface described above is committed under strict SemVer as of 1.0.0. See [STABILITY.md](./STABILITY.md) for the full enumeration and what is explicitly not promised.
+- **Internals.** Arena-backed data structures (O(1) for LRU/TinyLFU/Sized, O(log n) for LFU) and sharded concurrency (up to 16 shards for entry-bounded caches). Internals are free to evolve within the 1.x line without affecting the surface documented here.
+- **REPS.** Every public item is covered by rustdoc with at least one example. **No `unsafe` is used anywhere in the crate.** See [REPS.md](../REPS.md) for the project's quality discipline.
+- **Tests.** The crate ships 9 unit tests, 47 integration tests, 17 property tests (`proptest`), and 18 doctests — 91 tests total. Every public method has a working example that runs under `cargo test`.
 
 <hr><br>
 <a href="#top">&uarr; <b>TOP</b></a>

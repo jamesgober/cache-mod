@@ -1,4 +1,4 @@
-//! Byte-bound cache — arena-backed reference implementation.
+//! Byte-bound cache — arena-backed, single-`Mutex` implementation.
 
 use core::hash::Hash;
 use std::collections::HashMap;
@@ -18,9 +18,15 @@ use crate::util::MutexExt;
 /// the insert returns `None` and the value is dropped. (No cache could
 /// honour such a request.)
 ///
-/// 0.6.0 implementation: arena-backed doubly-linked list with O(1) promote
-/// and O(1) eviction (eviction may loop until enough weight is reclaimed).
-/// The lock-strategy upgrade lands in 0.7.0 without changing this public surface.
+/// # Implementation
+///
+/// Arena-backed doubly-linked list with O(1) promote and O(1) eviction
+/// (eviction may loop until enough weight is reclaimed). Unlike the other
+/// cache types in this crate, `SizedCache` is not sharded — splitting the
+/// weight budget across shards would silently reject values that fit the
+/// global budget, which is the wrong contract for a byte-bound cache.
+/// Internal layout may evolve in future minor releases without changing
+/// this public surface.
 ///
 /// # Choice of unit
 ///
