@@ -19,6 +19,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-05-21
+
+Hardening + audit milestone. No new features. The 0.7.0 surface is locked down with explicit contracts, expanded test coverage, and a license / advisory gate. Skipped 0.8.0 — the `SizedCache` sharding redesign hasn't surfaced as a real-world bottleneck and forcing it through artificially would have been busywork.
+
+### Added
+
+- `#[must_use]` on every `Cache` trait method that returns a value (`get`, `insert`, `remove`, `contains_key`, `len`, `is_empty`, `capacity`). Silently dropping these is almost always a bug — explicit `let _ = ...` is now required to opt out.
+- Crate-level **Guarantees** section in `src/lib.rs` rustdoc covering: no `unsafe`, no `panic!` / `unwrap` / `expect` on shipping paths, no background threads, no required runtime, `Send + Sync` everywhere when `K, V` are.
+- **9 new unit tests** in `src/sharding.rs` covering the `shard_count` heuristic, `per_shard_capacity` floor-division behaviour, deterministic shard routing, and key distribution across shards.
+- **8 new property tests** in `tests/properties.rs`: 4 concurrent-safety properties (4 threads × 256 random ops each, asserting capacity invariant survives interleaving) and 4 cross-cache remove-then-contains symmetry properties.
+- `deny.toml` — `cargo deny` configuration locking in license allow-list (MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib, Apache-2.0 WITH LLVM-exception), denying yanked crates, warning on duplicate versions, denying wildcard / unknown-registry / unknown-git dependencies. Run with `cargo deny check all`.
+
+### Changed
+
+- `Cache::insert` rustdoc clarified: the return value carries useful information (new-vs-replace, or admit-vs-reject for `TinyLfuCache`), and the doc now points users at `let _ = ...` if they genuinely want to drop it.
+- `Cache::len` rustdoc explicitly notes that the sharded implementation sums per-shard lengths under brief locks — it is **not** an atomic snapshot across shards.
+- `Cache::clear` rustdoc explicitly notes that auxiliary state (LFU's priority index, TinyLFU's sketch, the monotonic clocks) is reset alongside the entries.
+- `Cache::contains_key` rustdoc clarifies the `TtlCache`-specific nuance: an expired-but-not-yet-cleaned entry is removed during the check.
+- Crate-level rustdoc Status section updated — no more stale "rewrites land in 0.6.0" claims. 0.6.0 (arena-backed) and 0.7.0 (sharded) have both shipped.
+- `Cargo.toml`: version `0.7.0` → `0.9.0`. Skipped 0.8.0.
+
+### Verified
+
+- All 9 unit + 47 integration + 17 property + 18 doctests pass — **91 tests** total, up from 74.
+- `cargo fmt --all -- --check` clean.
+- `cargo clippy --all-targets --all-features -- -D warnings` clean.
+- `cargo clippy --all-targets --no-default-features -- -D warnings` clean.
+- `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS="-D warnings"` clean — zero rustdoc warnings.
+- REPS lint surface in `src/lib.rs` honored: every `deny(...)` clippy / rustc lint still applies. No `unsafe` in the crate.
+
+---
+
 ## [0.7.0] - 2026-05-20
 
 Concurrency milestone. The single `Mutex<Inner>` from 0.6.x is replaced by a sharded structure across every cache type. Public API is byte-identical — same `Cache` trait, same five cache types, same constructors and signatures. Behavioral contract gains one explicitly-documented approximation: eviction is now **per-shard approximate** rather than strictly global once a cache holds more than a handful of entries.
@@ -189,7 +221,8 @@ Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.9.0
 [0.7.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.7.0
 [0.6.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.6.0
 [0.5.1]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.1

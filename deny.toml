@@ -1,0 +1,42 @@
+# cargo-deny configuration for cache-mod.
+#
+# Run with:  cargo deny check all
+#
+# Locks in the dependency story ahead of the 1.0 freeze: only permissive
+# licenses, no known-vulnerable advisories, no duplicate crate versions
+# from accidental Cargo.lock churn.
+
+[advisories]
+# Stay current with RUSTSEC advisories; the library has no direct
+# runtime dependencies, so the only deps to clear are dev-only
+# (criterion, proptest) which receive normal upstream maintenance.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Allow only well-known permissive licenses. Anything outside this list
+# triggers a build failure and forces a deliberate decision.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

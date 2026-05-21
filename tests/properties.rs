@@ -160,3 +160,167 @@ proptest! {
         prop_assert_eq!(cache.get(&k), Some(v));
     }
 }
+
+// -----------------------------------------------------------------------------
+// Concurrent-safety properties.
+//
+// Each test spawns N threads driving random operations against a single
+// shared cache. The asserted property is conservative — the cache must
+// never observably violate its capacity invariant or panic — regardless
+// of interleaving. We deliberately do NOT assert specific values or hit
+// rates, since concurrent interleaving makes those non-deterministic.
+// -----------------------------------------------------------------------------
+
+use std::sync::Arc;
+use std::thread;
+
+const CONCURRENT_THREADS: usize = 4;
+const CONCURRENT_OPS_PER_THREAD: usize = 256;
+
+fn run_concurrent_ops<C>(cache: Arc<C>, ops: Vec<Op>, capacity_bound: usize)
+where
+    C: Cache<u8, u8> + Send + Sync + 'static,
+{
+    // Partition the op stream across threads — each thread gets a roughly
+    // equal slice and applies them serially. Cross-thread interleaving
+    // emerges from the OS scheduler.
+    let chunk = ops.len() / CONCURRENT_THREADS.max(1);
+    let chunks: Vec<Vec<Op>> = (0..CONCURRENT_THREADS)
+        .map(|t| {
+            let start = t * chunk;
+            let end = if t + 1 == CONCURRENT_THREADS {
+                ops.len()
+            } else {
+                start + chunk
+            };
+            ops[start..end].to_vec()
+        })
+        .collect();
+
+    let handles: Vec<_> = chunks
+        .into_iter()
+        .map(|chunk| {
+            let cache = Arc::clone(&cache);
+            thread::spawn(move || {
+                for op in chunk {
+                    match op {
+                        Op::Insert(k, v) => {
+                            let _ = cache.insert(k, v);
+                        }
+                        Op::Get(k) => {
+                            let _ = cache.get(&k);
+                        }
+                        Op::Remove(k) => {
+                            let _ = cache.remove(&k);
+                        }
+                        Op::ContainsKey(k) => {
+                            let _ = cache.contains_key(&k);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("worker thread should not panic");
+    }
+
+    // After every thread has joined, the cache must still respect its
+    // capacity bound.
+    assert!(
+        cache.len() <= capacity_bound,
+        "post-join len {} exceeded capacity bound {}",
+        cache.len(),
+        capacity_bound,
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    #[test]
+    fn lru_concurrent_threads_preserve_capacity(
+        ops in vec(op_strategy(), CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD..=CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD + 1),
+    ) {
+        // Capacity 64 → 4 shards × 16 each. Exercises sharded code path.
+        let cache: Arc<LruCache<u8, u8>> = Arc::new(LruCache::new(64).expect("capacity > 0"));
+        run_concurrent_ops(cache, ops, 64);
+    }
+
+    #[test]
+    fn lfu_concurrent_threads_preserve_capacity(
+        ops in vec(op_strategy(), CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD..=CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD + 1),
+    ) {
+        let cache: Arc<LfuCache<u8, u8>> = Arc::new(LfuCache::new(64).expect("capacity > 0"));
+        run_concurrent_ops(cache, ops, 64);
+    }
+
+    #[test]
+    fn ttl_concurrent_threads_preserve_capacity(
+        ops in vec(op_strategy(), CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD..=CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD + 1),
+    ) {
+        let cache: Arc<TtlCache<u8, u8>> =
+            Arc::new(TtlCache::new(64, Duration::from_secs(60)).expect("capacity > 0"));
+        run_concurrent_ops(cache, ops, 64);
+    }
+
+    #[test]
+    fn tinylfu_concurrent_threads_preserve_capacity(
+        ops in vec(op_strategy(), CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD..=CONCURRENT_THREADS * CONCURRENT_OPS_PER_THREAD + 1),
+    ) {
+        let cache: Arc<TinyLfuCache<u8, u8>> = Arc::new(TinyLfuCache::new(64).expect("capacity > 0"));
+        run_concurrent_ops(cache, ops, 64);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Cross-cache symmetry properties — invariants that should hold regardless
+// of which `Cache` implementation is under test.
+// -----------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn lru_remove_then_contains_key_returns_false(k in any::<u8>(), v in any::<u8>()) {
+        let cache: LruCache<u8, u8> = LruCache::new(16).expect("capacity > 0");
+        let _ = cache.insert(k, v);
+        prop_assert!(cache.contains_key(&k));
+        let _ = cache.remove(&k);
+        prop_assert!(!cache.contains_key(&k));
+        prop_assert_eq!(cache.get(&k), None);
+    }
+
+    #[test]
+    fn lfu_remove_then_contains_key_returns_false(k in any::<u8>(), v in any::<u8>()) {
+        let cache: LfuCache<u8, u8> = LfuCache::new(16).expect("capacity > 0");
+        let _ = cache.insert(k, v);
+        prop_assert!(cache.contains_key(&k));
+        let _ = cache.remove(&k);
+        prop_assert!(!cache.contains_key(&k));
+        prop_assert_eq!(cache.get(&k), None);
+    }
+
+    #[test]
+    fn ttl_remove_then_contains_key_returns_false(k in any::<u8>(), v in any::<u8>()) {
+        let cache: TtlCache<u8, u8> =
+            TtlCache::new(16, Duration::from_secs(60)).expect("capacity > 0");
+        let _ = cache.insert(k, v);
+        prop_assert!(cache.contains_key(&k));
+        let _ = cache.remove(&k);
+        prop_assert!(!cache.contains_key(&k));
+        prop_assert_eq!(cache.get(&k), None);
+    }
+
+    #[test]
+    fn sized_remove_then_contains_key_returns_false(k in any::<u8>(), v in any::<u8>()) {
+        fn unit_weight(_: &u8) -> usize { 1 }
+        let cache: SizedCache<u8, u8> = SizedCache::new(16, unit_weight).expect("max_weight > 0");
+        let _ = cache.insert(k, v);
+        prop_assert!(cache.contains_key(&k));
+        let _ = cache.remove(&k);
+        prop_assert!(!cache.contains_key(&k));
+        prop_assert_eq!(cache.get(&k), None);
+    }
+}

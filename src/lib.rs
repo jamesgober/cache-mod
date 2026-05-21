@@ -12,8 +12,29 @@
 //! [`LruCache`] (Least-Recently-Used), [`LfuCache`] (Least-Frequently-Used),
 //! [`TtlCache`] (Time-To-Live, lazy expiry), [`TinyLfuCache`] (Count-Min Sketch
 //! admission filter + LRU main), and [`SizedCache`] (byte-bound capacity).
-//! Lock-free, arena-backed rewrites land in 0.6.0 without changing this
-//! public surface. The API is not yet frozen — pin exact versions until 1.0.
+//! Internals are arena-backed (0.6.0) and sharded for concurrent throughput
+//! (0.7.0). The API is currently in the 0.9.x hardening cycle; it is **not**
+//! yet frozen, but no further breaking changes are planned before the 1.0
+//! release. Pin exact versions until 1.0 is tagged.
+//!
+//! # Guarantees
+//!
+//! - **No `unsafe`.** This crate contains zero `unsafe` blocks. Every cache
+//!   operation goes through safe abstractions only.
+//! - **No `panic!`, no `unwrap`, no `expect`.** The library code never calls
+//!   any of these macros / methods on shipping paths. Where a non-panicking
+//!   `unreachable!()` appears, it documents an invariant the caller is
+//!   responsible for upholding inside `pub(crate)` arena helpers; every
+//!   public method is panic-free given valid arguments. `clippy::unwrap_used`
+//!   and `clippy::expect_used` are denied at the crate level.
+//! - **No background threads.** Every cache type uses lazy bookkeeping —
+//!   eviction, expiry, and sketch aging run on the call-site thread that
+//!   triggered them. No `std::thread::spawn` happens inside the crate.
+//! - **No required runtime.** The crate has no async runtime dependency.
+//!   `&self` everywhere lets you share cache instances across `.await`
+//!   points if you do use one.
+//! - **Send + Sync.** Every cache type is `Send + Sync` when `K: Send + Sync`
+//!   and `V: Send + Sync`.
 //!
 //! # Quick start
 //!
