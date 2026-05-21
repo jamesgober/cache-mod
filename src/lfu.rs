@@ -1,12 +1,12 @@
-//! Least-Frequently-Used (LFU) cache — BTreeMap-indexed O(log n) eviction.
+//! Least-Frequently-Used (LFU) cache — sharded, per-shard BTreeMap priority index.
 
 use core::hash::Hash;
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
 
 use crate::cache::Cache;
 use crate::error::CacheError;
+use crate::sharding::{self, Sharded};
 use crate::util::MutexExt;
 
 /// A bounded, thread-safe LFU cache.
@@ -17,14 +17,18 @@ use crate::util::MutexExt;
 /// evicting the **least-recently-accessed** entry.
 ///
 /// [`contains_key`](Cache::contains_key) is a query and does not increment
-/// the counter or touch access order, per the [`Cache`] contract.
+/// the counter or touch access order.
 ///
-/// 0.6.0 implementation: a `HashMap` for value lookup paired with a
-/// `BTreeMap<(count, age), K>` ordered index. Every access and eviction is
-/// O(log n) — the 0.5.x O(n) min-scan is gone. The trade-off is one extra
-/// `K::clone()` per access, paid back many-fold once the cache holds more
-/// than a few dozen entries. The sharded / lock-free lock-strategy upgrade
-/// lands in 0.7.0 without changing this public surface.
+/// # Implementation (0.7.0)
+///
+/// Sharded into up to 16 independent stores keyed by hash of `K`. Each
+/// shard pairs a `HashMap<K, Entry<V>>` for value lookup with a
+/// `BTreeMap<(count, age), K>` ordered priority index for O(log n) eviction.
+///
+/// Eviction is **per-shard approximate** LFU — the entry evicted on
+/// overflow is the lowest-counter entry in the affected shard, not
+/// necessarily the lowest-counter entry globally. Tiny caches (< 32 entries)
+/// use a single shard and retain strict global semantics.
 ///
 /// # Example
 ///
@@ -36,11 +40,9 @@ use crate::util::MutexExt;
 /// cache.insert("a", 1);
 /// cache.insert("b", 2);
 ///
-/// // Bump "a"'s frequency above "b"'s.
 /// assert_eq!(cache.get(&"a"), Some(1));
 /// assert_eq!(cache.get(&"a"), Some(1));
 ///
-/// // Inserting "c" should evict "b" (lowest counter).
 /// cache.insert("c", 3);
 /// assert_eq!(cache.get(&"b"), None);
 /// assert_eq!(cache.get(&"a"), Some(1));
@@ -48,24 +50,19 @@ use crate::util::MutexExt;
 /// ```
 pub struct LfuCache<K, V> {
     capacity: NonZeroUsize,
-    inner: Mutex<Inner<K, V>>,
+    sharded: Sharded<Inner<K, V>>,
 }
 
 struct Entry<V> {
     value: V,
-    /// Number of accesses since insertion.
     count: u64,
-    /// Monotonic access marker. Lower = older.
     age: u64,
 }
 
 struct Inner<K, V> {
+    capacity: NonZeroUsize,
     map: HashMap<K, Entry<V>>,
-    /// Eviction priority index. Sorted by (count, age) — lowest first, so
-    /// `pop_first` gives the least-frequently-used, breaking ties with
-    /// least-recently-accessed.
     by_priority: BTreeMap<(u64, u64), K>,
-    /// Monotonic clock used to stamp `Entry::age`. Wraps after 2^64 ops.
     clock: u64,
 }
 
@@ -73,15 +70,16 @@ impl<K, V> Inner<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    fn with_capacity(cap: usize) -> Self {
+    fn with_capacity(capacity: NonZeroUsize) -> Self {
+        let cap = capacity.get();
         Self {
+            capacity,
             map: HashMap::with_capacity(cap),
             by_priority: BTreeMap::new(),
             clock: 0,
         }
     }
 
-    /// Advance the clock and return the new age value.
     fn tick(&mut self) -> u64 {
         self.clock = self.clock.wrapping_add(1);
         self.clock
@@ -121,11 +119,10 @@ where
     /// let cache: LfuCache<String, u32> = LfuCache::with_capacity(cap);
     /// ```
     pub fn with_capacity(capacity: NonZeroUsize) -> Self {
-        let cap = capacity.get();
-        Self {
-            capacity,
-            inner: Mutex::new(Inner::with_capacity(cap)),
-        }
+        let num_shards = sharding::shard_count(capacity);
+        let per_shard = sharding::per_shard_capacity(capacity, num_shards);
+        let sharded = Sharded::from_factory(num_shards, |_| Inner::with_capacity(per_shard));
+        Self { capacity, sharded }
     }
 }
 
@@ -135,11 +132,9 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(key).lock_recover();
         let new_age = inner.tick();
 
-        // Extract old priority so we can update the BTreeMap without
-        // double-borrowing.
         let (old_priority, new_priority, value) = {
             let entry = inner.map.get_mut(key)?;
             let old = (entry.count, entry.age);
@@ -155,10 +150,10 @@ where
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(&key).lock_recover();
         let new_age = inner.tick();
 
-        // Live update path.
+        // Live update.
         if let Some(entry) = inner.map.get_mut(&key) {
             let old_priority = (entry.count, entry.age);
             entry.count = entry.count.saturating_add(1);
@@ -170,13 +165,10 @@ where
             return Some(old_value);
         }
 
-        // New key — evict if at capacity.
-        if inner.map.len() >= self.capacity.get() {
-            if let Some((victim_priority, victim_key)) = inner.by_priority.pop_first() {
+        // New key — evict if at per-shard capacity.
+        if inner.map.len() >= inner.capacity.get() {
+            if let Some((_, victim_key)) = inner.by_priority.pop_first() {
                 let _ = inner.map.remove(&victim_key);
-                // pop_first already removed the priority entry — nothing
-                // more to do. Suppress unused.
-                let _ = victim_priority;
             }
         }
 
@@ -192,25 +184,34 @@ where
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(key).lock_recover();
         let entry = inner.map.remove(key)?;
         let _ = inner.by_priority.remove(&(entry.count, entry.age));
         Some(entry.value)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.inner.lock_recover().map.contains_key(key)
+        self.sharded
+            .shard_for(key)
+            .lock_recover()
+            .map
+            .contains_key(key)
     }
 
     fn len(&self) -> usize {
-        self.inner.lock_recover().map.len()
+        self.sharded
+            .iter()
+            .map(|m| m.lock_recover().map.len())
+            .sum()
     }
 
     fn clear(&self) {
-        let mut inner = self.inner.lock_recover();
-        inner.map.clear();
-        inner.by_priority.clear();
-        inner.clock = 0;
+        for mutex in self.sharded.iter() {
+            let mut inner = mutex.lock_recover();
+            inner.map.clear();
+            inner.by_priority.clear();
+            inner.clock = 0;
+        }
     }
 
     fn capacity(&self) -> usize {

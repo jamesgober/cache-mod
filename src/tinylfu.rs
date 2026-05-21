@@ -1,51 +1,41 @@
-//! TinyLFU cache — Count-Min Sketch frequency estimator + admission filter
-//! on top of an arena-backed LRU main cache.
+//! TinyLFU cache — sharded arena-backed LRU main + per-shard Count-Min Sketch.
 
 use core::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
 
 use crate::cache::Cache;
 use crate::error::CacheError;
+use crate::sharding::{self, Sharded};
 use crate::util::MutexExt;
 
-/// Count-Min Sketch depth (number of independent hash rows).
 const SKETCH_DEPTH: usize = 4;
-
-/// Width floor — the sketch is never narrower than this, regardless of
-/// configured capacity. Guards small-capacity caches from degenerate
-/// collision rates.
 const MIN_SKETCH_WIDTH: usize = 64;
 
 /// A bounded, thread-safe cache with **admission control**.
 ///
 /// `TinyLfuCache` tracks the access frequency of *every* key it observes —
-/// including keys that aren't (yet) in the cache — using a fixed-size
-/// [Count-Min Sketch][cms]. On capacity overflow, an incoming key is
-/// **admitted only if its estimated frequency exceeds the LRU victim's**.
-/// One-hit-wonders are rejected at the door instead of evicting hot entries.
+/// including keys that aren't (yet) in the cache — using a Count-Min Sketch.
+/// On capacity overflow, an incoming key is **admitted only if its
+/// estimated frequency exceeds the LRU victim's**. One-hit-wonders are
+/// rejected at the door instead of evicting hot entries.
 ///
-/// This is a deliberate semantic deviation from `LruCache` / `LfuCache` /
-/// `TtlCache`: a successful [`insert`](Cache::insert) call **does not
-/// guarantee** that the value is in the cache. The admission filter may
-/// have rejected it. Callers that need strict insertion guarantees should
-/// use `LruCache` or `LfuCache` instead.
+/// A successful [`insert`](Cache::insert) call **does not guarantee** the
+/// value is in the cache. The admission filter may reject it. Callers that
+/// need strict insertion guarantees should use `LruCache` or `LfuCache`.
 ///
-/// 0.6.0 implementation:
+/// # Implementation (0.7.0)
 ///
-/// - main cache is arena-backed (O(1) promote, O(1) evict — same shape as `LruCache`)
-/// - depth-4 Count-Min Sketch with `u8` saturating counters
-/// - width = `max(MIN_SKETCH_WIDTH, 2 × capacity)`, rounded to the next power of two
-/// - periodic frequency decay: every `10 × capacity` increments, every counter
-///   is right-shifted by 1 (W-TinyLFU "aging" step, keeps the sketch responsive
-///   to shifting workloads)
-/// - main cache uses LRU ordering; eviction victim = least-recently-accessed
-/// - lock-minimized via `&self` + `Mutex<Inner>`; a sharded / lock-free variant
-///   lands in 0.7.0 without changing this public surface
+/// Sharded into up to 16 independent arenas keyed by hash of `K`. **Each
+/// shard owns its own Count-Min Sketch** — the frequency signal is
+/// per-shard, not global. This is a deliberate trade-off: a global sketch
+/// would force every access to lock a shared structure, defeating the
+/// point of sharding. Per-shard sketches still capture the local frequency
+/// signal accurately, which is what the local admission decision needs.
 ///
-/// [cms]: https://en.wikipedia.org/wiki/Count%E2%80%93min_sketch
+/// Eviction is approximate (per-shard LRU). Tiny caches (< 32 entries)
+/// use a single shard and retain strict global semantics.
 ///
 /// # Example
 ///
@@ -55,18 +45,16 @@ const MIN_SKETCH_WIDTH: usize = 64;
 /// let cache: TinyLfuCache<&'static str, u32> =
 ///     TinyLfuCache::new(4).expect("capacity > 0");
 ///
-/// // Build up the frequency signal for "hot".
 /// for _ in 0..16 {
 ///     let _ = cache.get(&"hot");
 ///     let _ = cache.insert("hot", 1);
 /// }
 ///
-/// // A subsequent insert will see "hot" as warm in the sketch.
 /// assert_eq!(cache.get(&"hot"), Some(1));
 /// ```
 pub struct TinyLfuCache<K, V> {
     capacity: NonZeroUsize,
-    inner: Mutex<Inner<K, V>>,
+    sharded: Sharded<Inner<K, V>>,
 }
 
 struct Node<K, V> {
@@ -77,6 +65,7 @@ struct Node<K, V> {
 }
 
 struct Inner<K, V> {
+    capacity: NonZeroUsize,
     nodes: Vec<Option<Node<K, V>>>,
     free: Vec<usize>,
     head: Option<usize>,
@@ -89,8 +78,10 @@ impl<K, V> Inner<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    fn with_capacity(cap: usize) -> Self {
+    fn with_capacity(capacity: NonZeroUsize) -> Self {
+        let cap = capacity.get();
         Self {
+            capacity,
             nodes: Vec::with_capacity(cap),
             free: Vec::new(),
             head: None,
@@ -208,11 +199,10 @@ where
     /// let cache: TinyLfuCache<String, u32> = TinyLfuCache::with_capacity(cap);
     /// ```
     pub fn with_capacity(capacity: NonZeroUsize) -> Self {
-        let cap = capacity.get();
-        Self {
-            capacity,
-            inner: Mutex::new(Inner::with_capacity(cap)),
-        }
+        let num_shards = sharding::shard_count(capacity);
+        let per_shard = sharding::per_shard_capacity(capacity, num_shards);
+        let sharded = Sharded::from_factory(num_shards, |_| Inner::with_capacity(per_shard));
+        Self { capacity, sharded }
     }
 }
 
@@ -222,8 +212,7 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
-        // Every observation feeds the sketch, even on cache miss.
+        let mut inner = self.sharded.shard_for(key).lock_recover();
         inner.sketch.increment(key);
         let idx = *inner.map.get(key)?;
         inner.promote(idx);
@@ -231,10 +220,9 @@ where
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(&key).lock_recover();
         inner.sketch.increment(&key);
 
-        // Live update: existing key always succeeds (no admission check).
         if let Some(&idx) = inner.map.get(&key) {
             let old = inner.nodes[idx]
                 .as_mut()
@@ -244,8 +232,7 @@ where
             return Some(old);
         }
 
-        // New key. Admission filter kicks in at capacity.
-        if inner.map.len() >= self.capacity.get() {
+        if inner.map.len() >= inner.capacity.get() {
             let candidate_freq = inner.sketch.estimate(&key);
             let tail_idx = inner.tail?;
             let victim_key = inner.nodes[tail_idx]
@@ -254,7 +241,6 @@ where
                 .unwrap_or_else(|| unreachable!("tail must be occupied"));
             let victim_freq = inner.sketch.estimate(&victim_key);
             if candidate_freq <= victim_freq {
-                // Reject — value dropped at function exit.
                 return None;
             }
             inner.unlink(tail_idx);
@@ -274,7 +260,7 @@ where
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(key).lock_recover();
         let idx = inner.map.remove(key)?;
         inner.unlink(idx);
         let node = inner.dealloc(idx);
@@ -282,21 +268,30 @@ where
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.inner.lock_recover().map.contains_key(key)
+        self.sharded
+            .shard_for(key)
+            .lock_recover()
+            .map
+            .contains_key(key)
     }
 
     fn len(&self) -> usize {
-        self.inner.lock_recover().map.len()
+        self.sharded
+            .iter()
+            .map(|m| m.lock_recover().map.len())
+            .sum()
     }
 
     fn clear(&self) {
-        let mut inner = self.inner.lock_recover();
-        inner.nodes.clear();
-        inner.free.clear();
-        inner.head = None;
-        inner.tail = None;
-        inner.map.clear();
-        inner.sketch.reset();
+        for mutex in self.sharded.iter() {
+            let mut inner = mutex.lock_recover();
+            inner.nodes.clear();
+            inner.free.clear();
+            inner.head = None;
+            inner.tail = None;
+            inner.map.clear();
+            inner.sketch.reset();
+        }
     }
 
     fn capacity(&self) -> usize {
@@ -305,7 +300,7 @@ where
 }
 
 // -----------------------------------------------------------------------------
-// Count-Min Sketch
+// Count-Min Sketch (per-shard)
 // -----------------------------------------------------------------------------
 
 struct CountMinSketch {

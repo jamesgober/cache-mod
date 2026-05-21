@@ -1,13 +1,13 @@
-//! Time-To-Live (TTL) cache — lazy-expiry reference implementation.
+//! Time-To-Live (TTL) cache — sharded, lazy-expiry reference implementation.
 
 use core::hash::Hash;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::cache::Cache;
 use crate::error::CacheError;
+use crate::sharding::{self, Sharded};
 use crate::util::MutexExt;
 
 /// Fallback deadline span (~100 years) used when `Instant + ttl` would
@@ -25,10 +25,16 @@ const FAR_FUTURE: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 100);
 /// Both [`insert`](Cache::insert) and [`insert_with_ttl`](TtlCache::insert_with_ttl)
 /// reset the deadline on the affected entry — writes always re-arm the timer.
 ///
-/// This is the reference implementation: correct, `&self`-everywhere,
-/// `Mutex`-guarded. Eviction and lazy purge are O(n) scans. The lock-free,
-/// arena-backed replacement lands in a later minor without changing this
-/// public surface.
+/// # Implementation (0.7.0)
+///
+/// Sharded into up to 16 independent stores keyed by hash of `K`. Each
+/// shard owns its own `HashMap` and applies expiry / overflow eviction
+/// locally. Tiny caches (< 32 entries) use a single shard.
+///
+/// Eviction is **per-shard approximate** — overflow inside one shard
+/// evicts the soonest-expiring entry within that shard, not necessarily
+/// the soonest-expiring entry globally. Lazy expiry remains exact within
+/// the operating shard.
 ///
 /// # Example
 ///
@@ -45,7 +51,7 @@ const FAR_FUTURE: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 100);
 pub struct TtlCache<K, V> {
     capacity: NonZeroUsize,
     default_ttl: Duration,
-    inner: Mutex<Inner<K, V>>,
+    sharded: Sharded<Inner<K, V>>,
 }
 
 struct Entry<V> {
@@ -54,7 +60,21 @@ struct Entry<V> {
 }
 
 struct Inner<K, V> {
+    capacity: NonZeroUsize,
     map: HashMap<K, Entry<V>>,
+}
+
+impl<K, V> Inner<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    fn with_capacity(capacity: NonZeroUsize) -> Self {
+        let cap = capacity.get();
+        Self {
+            capacity,
+            map: HashMap::with_capacity(cap),
+        }
+    }
 }
 
 impl<K, V> TtlCache<K, V>
@@ -96,13 +116,13 @@ where
     ///     TtlCache::with_capacity(cap, Duration::from_secs(60));
     /// ```
     pub fn with_capacity(capacity: NonZeroUsize, ttl: Duration) -> Self {
-        let cap = capacity.get();
+        let num_shards = sharding::shard_count(capacity);
+        let per_shard = sharding::per_shard_capacity(capacity, num_shards);
+        let sharded = Sharded::from_factory(num_shards, |_| Inner::with_capacity(per_shard));
         Self {
             capacity,
             default_ttl: ttl,
-            inner: Mutex::new(Inner {
-                map: HashMap::with_capacity(cap),
-            }),
+            sharded,
         }
     }
 
@@ -127,35 +147,24 @@ where
     /// ```
     pub fn insert_with_ttl(&self, key: K, value: V, ttl: Duration) -> Option<V> {
         let deadline = compute_deadline(ttl);
-        let mut inner = self.inner.lock_recover();
-        self.insert_inner(&mut inner, key, value, deadline)
+        let mut inner = self.sharded.shard_for(&key).lock_recover();
+        Self::insert_inner(&mut inner, key, value, deadline)
     }
 
-    fn insert_inner(
-        &self,
-        inner: &mut Inner<K, V>,
-        key: K,
-        value: V,
-        deadline: Instant,
-    ) -> Option<V> {
+    fn insert_inner(inner: &mut Inner<K, V>, key: K, value: V, deadline: Instant) -> Option<V> {
         let now = Instant::now();
 
-        // Live update: existing key + still in-window.
         if let Some(existing) = inner.map.get_mut(&key) {
             if existing.expires_at > now {
                 let old = core::mem::replace(&mut existing.value, value);
                 existing.expires_at = deadline;
                 return Some(old);
             }
-            // Expired — fall through to fresh-insert path. Borrow drops here.
         }
 
-        // Drop any stale entry under this key so a re-insert reads as fresh.
         let _ = inner.map.remove(&key);
 
-        // Evict the soonest-expiring entry if at capacity. Already-expired
-        // entries naturally win this scan.
-        if inner.map.len() >= self.capacity.get() {
+        if inner.map.len() >= inner.capacity.get() {
             if let Some(victim) = find_victim(&inner.map) {
                 let _ = inner.map.remove(&victim);
             }
@@ -178,9 +187,8 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(key).lock_recover();
         let now = Instant::now();
-        // Read the deadline first (Copy) so the borrow drops before any mutation.
         let expires_at = inner.map.get(key).map(|e| e.expires_at)?;
         if expires_at <= now {
             let _ = inner.map.remove(key);
@@ -191,17 +199,17 @@ where
 
     fn insert(&self, key: K, value: V) -> Option<V> {
         let deadline = compute_deadline(self.default_ttl);
-        let mut inner = self.inner.lock_recover();
-        self.insert_inner(&mut inner, key, value, deadline)
+        let mut inner = self.sharded.shard_for(&key).lock_recover();
+        Self::insert_inner(&mut inner, key, value, deadline)
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(key).lock_recover();
         inner.map.remove(key).map(|e| e.value)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        let mut inner = self.inner.lock_recover();
+        let mut inner = self.sharded.shard_for(key).lock_recover();
         let now = Instant::now();
         let Some(expires_at) = inner.map.get(key).map(|e| e.expires_at) else {
             return false;
@@ -214,14 +222,20 @@ where
     }
 
     fn len(&self) -> usize {
-        let mut inner = self.inner.lock_recover();
-        purge_expired(&mut inner.map);
-        inner.map.len()
+        let mut total = 0;
+        for mutex in self.sharded.iter() {
+            let mut inner = mutex.lock_recover();
+            purge_expired(&mut inner.map);
+            total += inner.map.len();
+        }
+        total
     }
 
     fn clear(&self) {
-        let mut inner = self.inner.lock_recover();
-        inner.map.clear();
+        for mutex in self.sharded.iter() {
+            let mut inner = mutex.lock_recover();
+            inner.map.clear();
+        }
     }
 
     fn capacity(&self) -> usize {
@@ -229,8 +243,6 @@ where
     }
 }
 
-/// Compute the deadline for a TTL. Falls back to a far-future deadline if
-/// `Instant + ttl` would overflow.
 fn compute_deadline(ttl: Duration) -> Instant {
     let now = Instant::now();
     match now.checked_add(ttl) {
@@ -239,8 +251,6 @@ fn compute_deadline(ttl: Duration) -> Instant {
     }
 }
 
-/// Eviction target: soonest expiration first. Already-expired entries win
-/// naturally because their `expires_at` is in the past.
 fn find_victim<K, V>(map: &HashMap<K, Entry<V>>) -> Option<K>
 where
     K: Clone,
@@ -250,7 +260,6 @@ where
         .map(|(k, _)| k.clone())
 }
 
-/// Remove every entry whose deadline is at or before `Instant::now()`.
 fn purge_expired<K, V>(map: &mut HashMap<K, Entry<V>>) {
     let now = Instant::now();
     map.retain(|_, entry| entry.expires_at > now);

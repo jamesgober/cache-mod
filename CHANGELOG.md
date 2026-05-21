@@ -19,6 +19,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-05-20
+
+Concurrency milestone. The single `Mutex<Inner>` from 0.6.x is replaced by a sharded structure across every cache type. Public API is byte-identical — same `Cache` trait, same five cache types, same constructors and signatures. Behavioral contract gains one explicitly-documented approximation: eviction is now **per-shard approximate** rather than strictly global once a cache holds more than a handful of entries.
+
+### Added
+
+- Internal `src/sharding.rs` module with a `Sharded<T>` helper, shard-count heuristic, and per-shard capacity calculator. All five cache types now route operations through `Sharded::shard_for(&key)`.
+
+### Changed
+
+- `LruCache`, `LfuCache`, `TtlCache`, `TinyLfuCache`: internal `Mutex<Inner>` replaced by `Sharded<Inner>` — up to 16 independent shards routed by `DefaultHasher`-based key hash. Each shard holds its own arena / `HashMap` / priority index / sketch. Lock contention is bounded by per-shard traffic, not by total cache traffic.
+- `SizedCache` deliberately **stays unsharded** in 0.7.0. Splitting `max_weight` evenly across shards produces a per-shard weight ceiling small enough to reject values that would have fit comfortably in the unsharded cache. A future release can revisit with a smarter routing scheme (e.g. shard purely for the lookup `HashMap` while keeping a single global weight budget); for 0.7.0 the safer call is to keep the 0.6.0 single-`Mutex` implementation intact.
+- Shard-count heuristic: tiny caches (capacity below `MIN_PER_SHARD * 2` = 32 entries, or `max_weight < 32` for `SizedCache`) use a single shard and retain strict global eviction ordering. Larger caches scale up to 16 shards while keeping per-shard size at or above `MIN_PER_SHARD` (16). This preserves the existing smoke tests' deterministic behaviour at small capacities while giving production-sized caches the concurrency win.
+- Per-shard capacity is computed by floor division (`total / num_shards`). Total effective capacity may be at most `num_shards - 1` less than requested when capacity isn't divisible by shard count. Documented on each cache type.
+- `TinyLfuCache`: Count-Min Sketch is now **per-shard**, not global. A global sketch would force every access through a shared structure and defeat the point of sharding. Per-shard sketches still capture the local frequency signal accurately, which is what the per-shard admission decision needs.
+- Type-level documentation on every cache surfaces the per-shard-approximate-eviction caveat explicitly.
+- `Cargo.toml`: version `0.6.0` → `0.7.0`.
+
+### Verified
+
+- All 47 integration tests, 9 property tests, and 18 doctests pass unchanged. The single-shard-for-tiny-caches heuristic intentionally preserves the strict-ordering expectations of the existing test suite.
+- `cargo bench` compiles cleanly. Multi-threaded contention numbers are workload-dependent; running `cargo bench` after a fresh build will surface the local improvement.
+
+---
+
 ## [0.6.0] - 2026-05-20
 
 Implementation-quality milestone. Public surface is byte-identical to 0.5.x — every existing call-site compiles and behaves identically — but the internal data structures behind every cache type changed. Asymptotic complexity is better across the board.
@@ -164,7 +189,8 @@ Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.7.0
 [0.6.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.6.0
 [0.5.1]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.1
 [0.5.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.5.0

@@ -58,6 +58,8 @@ mod lfu;
 #[cfg(feature = "std")]
 mod lru;
 #[cfg(feature = "std")]
+mod sharding;
+#[cfg(feature = "std")]
 mod sized;
 #[cfg(feature = "std")]
 mod tinylfu;
