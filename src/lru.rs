@@ -1,5 +1,6 @@
 //! Least-Recently-Used (LRU) cache — sharded, arena-backed implementation.
 
+use core::borrow::Borrow;
 use core::hash::Hash;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -71,14 +72,14 @@ where
     K: Eq + Hash + Clone,
 {
     fn with_capacity(capacity: NonZeroUsize) -> Self {
-        let cap = capacity.get();
+        let reserve = sharding::initial_reserve(capacity);
         Self {
             capacity,
-            nodes: Vec::with_capacity(cap),
+            nodes: Vec::with_capacity(reserve),
             free: Vec::new(),
             head: None,
             tail: None,
-            map: HashMap::with_capacity(cap),
+            map: HashMap::with_capacity(reserve),
         }
     }
 
@@ -154,6 +155,20 @@ where
         self.unlink(idx);
         self.push_front(idx);
     }
+
+    /// Evict the LRU tail. The index entry is removed before the slot is
+    /// freed, so a panic in the user's `Hash` or `Eq` leaves the index and
+    /// the arena in step.
+    fn evict_tail(&mut self) {
+        let Some(tail_idx) = self.tail else {
+            return;
+        };
+        if let Some(node) = self.nodes[tail_idx].as_ref() {
+            let _ = self.map.remove(&node.key);
+        }
+        self.unlink(tail_idx);
+        let _ = self.dealloc(tail_idx);
+    }
 }
 
 impl<K, V> LruCache<K, V>
@@ -194,6 +209,58 @@ where
         let sharded = Sharded::from_factory(num_shards, |_| Inner::with_capacity(per_shard));
         Self { capacity, sharded }
     }
+
+    /// Like [`get`](Cache::get), but takes any borrowed form of the key,
+    /// so an `LruCache<String, V>` can be queried with a `&str` without
+    /// building a `String`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cache_mod::{Cache, LruCache};
+    ///
+    /// let cache: LruCache<String, u32> = LruCache::new(8).expect("capacity > 0");
+    /// cache.insert("hits".to_string(), 3);
+    /// assert_eq!(cache.get_by("hits"), Some(3));
+    /// ```
+    pub fn get_by<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut inner = self.sharded.shard_for(key).lock_recover();
+        let idx = *inner.map.get(key)?;
+        inner.promote(idx);
+        inner.nodes[idx].as_ref().map(|n| n.value.clone())
+    }
+
+    /// Like [`contains_key`](Cache::contains_key), but takes any borrowed
+    /// form of the key.
+    pub fn contains_key_by<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.sharded
+            .shard_for(key)
+            .lock_recover()
+            .map
+            .contains_key(key)
+    }
+
+    /// Like [`remove`](Cache::remove), but takes any borrowed form of the
+    /// key.
+    pub fn remove_by<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut inner = self.sharded.shard_for(key).lock_recover();
+        let idx = inner.map.remove(key)?;
+        inner.unlink(idx);
+        let node = inner.dealloc(idx);
+        Some(node.value)
+    }
 }
 
 impl<K, V> Cache<K, V> for LruCache<K, V>
@@ -202,10 +269,7 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.sharded.shard_for(key).lock_recover();
-        let idx = *inner.map.get(key)?;
-        inner.promote(idx);
-        inner.nodes[idx].as_ref().map(|n| n.value.clone())
+        self.get_by(key)
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
@@ -222,11 +286,7 @@ where
 
         // New entry. Evict the LRU tail if at per-shard capacity.
         if inner.map.len() >= inner.capacity.get() {
-            if let Some(tail_idx) = inner.tail {
-                inner.unlink(tail_idx);
-                let evicted = inner.dealloc(tail_idx);
-                let _ = inner.map.remove(&evicted.key);
-            }
+            inner.evict_tail();
         }
 
         let idx = inner.alloc(Node {
@@ -235,25 +295,19 @@ where
             prev: None,
             next: None,
         });
-        inner.push_front(idx);
+        // Index first, then link: if the user's `Hash` panics here the
+        // node is unreachable but the list and the index still agree.
         let _ = inner.map.insert(key, idx);
+        inner.push_front(idx);
         None
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.sharded.shard_for(key).lock_recover();
-        let idx = inner.map.remove(key)?;
-        inner.unlink(idx);
-        let node = inner.dealloc(idx);
-        Some(node.value)
+        self.remove_by(key)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.sharded
-            .shard_for(key)
-            .lock_recover()
-            .map
-            .contains_key(key)
+        self.contains_key_by(key)
     }
 
     fn len(&self) -> usize {

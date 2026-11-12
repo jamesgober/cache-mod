@@ -25,8 +25,9 @@
 //!   any of these macros / methods on shipping paths. Where a non-panicking
 //!   `unreachable!()` appears, it documents an invariant the caller is
 //!   responsible for upholding inside `pub(crate)` arena helpers; every
-//!   public method is panic-free given valid arguments. `clippy::unwrap_used`
-//!   and `clippy::expect_used` are denied at the crate level.
+//!   public method is panic-free given valid arguments and `Hash`, `Eq`
+//!   and `Clone` impls that do not panic. `clippy::unwrap_used` and
+//!   `clippy::expect_used` are denied at the crate level.
 //! - **No background threads.** Every cache type uses lazy bookkeeping —
 //!   eviction, expiry, and sketch aging run on the call-site thread that
 //!   triggered them. No `std::thread::spawn` happens inside the crate.

@@ -438,6 +438,8 @@ let cache: TtlCache<String, u32> =
     TtlCache::new(128, Duration::from_secs(300)).expect("capacity > 0");
 ```
 
+Each shard keeps a deadline index next to its map, so every operation is O(log n) in the shard size; eviction on overflow reads the soonest deadline from the index instead of scanning the shard. `len` first drops expired entries (O(log n) each), then sums the shard sizes.
+
 #### `TtlCache::insert_with_ttl(&self, key: K, value: V, ttl: Duration) -> Option<V>`
 
 **Parameters:**
@@ -670,6 +672,21 @@ let cache: SizedCache<u32, String> = SizedCache::new(4096, weigh).expect("max_we
 assert_eq!(cache.max_weight(), 4096);
 ```
 
+The weight budget is not a memory limit. The weigher only sees the value, so key bytes and per-entry overhead are not counted, and a weigher that returns `0` lets the entry count grow without bound. For data from untrusted sources, return a fixed per-entry charge on top of the payload size:
+
+```rust
+use cache_mod::{Cache, SizedCache};
+
+// Every entry costs at least 64, so at most 1024 / 64 = 16 entries fit.
+fn weigh(v: &Vec<u8>) -> usize { v.len() + 64 }
+
+let cache: SizedCache<String, Vec<u8>> = SizedCache::new(1024, weigh).expect("max_weight > 0");
+for i in 0..100 {
+    cache.insert(format!("k{i}"), Vec::new());
+}
+assert!(cache.len() <= 16);
+```
+
 #### <span id="sizedcache-total_weight"></span>`SizedCache::total_weight(&self) -> usize`
 
 Returns the current sum of weights across all live entries.
@@ -687,6 +704,23 @@ assert_eq!(cache.total_weight(), 11);  // 5 + 6
 ```
 
 <br>
+
+### Borrowed-key lookups
+
+Every cache type has `get_by`, `contains_key_by` and `remove_by` (since 1.1.0). They behave exactly like `get`, `contains_key` and `remove`, but accept any borrowed form of the key, so a cache keyed by `String` can be queried with a `&str` without allocating:
+
+```rust
+use cache_mod::{Cache, LruCache};
+
+let cache: LruCache<String, u32> = LruCache::new(64).expect("capacity > 0");
+cache.insert("requests".to_string(), 1);
+
+assert_eq!(cache.get_by("requests"), Some(1));
+assert!(cache.contains_key_by("requests"));
+assert_eq!(cache.remove_by("requests"), Some(1));
+```
+
+The usual `Borrow` contract applies: the borrowed form must hash and compare the same as the owned key.
 
 ### `VERSION`
 
@@ -718,7 +752,7 @@ Each `Cache` method has documented access semantics that hold across every imple
 
 ### Capacity contract
 
-For four of the five types, capacity is an entry count and the invariant `cache.len() <= cache.capacity()` holds after every operation. For `SizedCache`, the invariant is `cache.total_weight() <= cache.max_weight()`; entry count can transiently exceed `max_weight` only if the weigher returns zero for some values (a degenerate but legal case).
+For four of the five types, capacity is an entry count and the invariant `cache.len() <= cache.capacity()` holds after every operation. For `SizedCache`, the invariant is `cache.total_weight() <= cache.max_weight()`. That bound covers only what the weigher reports: keys, per-entry overhead and the arena are not counted, and values the weigher scores as zero cost nothing, so the entry count is unbounded if the weigher can return zero. For untrusted input, add a fixed per-entry charge in the weigher (for example `v.len() + 64`).
 
 Both invariants are covered by `proptest`-driven property tests in `tests/properties.rs`.
 
@@ -746,7 +780,7 @@ for h in handles { let _ = h.join(); }
 
 ### Poison tolerance
 
-If a panic occurs while a cache method holds the inner `Mutex`, the lock is *poisoned*. Every cache type recovers automatically: the next call calls `PoisonError::into_inner` and proceeds. This is intentional — every operation re-establishes consistency between `map` and the auxiliary order/sketch/clock state before returning, so a poisoned lock does not weaken the cache's invariants.
+If a panic occurs while a cache method holds the inner `Mutex`, the lock is *poisoned*. Every cache type recovers automatically: the next call calls `PoisonError::into_inner` and proceeds. The only code that can panic under the lock is the key's `Hash` / `Eq` and the value's `Clone`. Since 1.1.0 every operation orders its steps so that such a panic leaves the index and the order/sketch/clock state consistent; at worst one entry becomes unreachable until `clear`.
 
 Practical implication: a panic in user code that runs while holding a cached value (e.g. inside the value type's `Clone` impl) does not require restarting the cache.
 

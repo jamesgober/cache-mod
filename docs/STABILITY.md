@@ -120,6 +120,21 @@ where K: Eq + Hash + Clone, V: Clone,
 }
 ```
 
+Added in 1.1.0 on every cache type (same bounds as above), and covered
+by the same promise:
+
+```rust
+pub fn get_by<Q>(&self, key: &Q) -> Option<V>
+where K: Borrow<Q>, Q: Hash + Eq + ?Sized;
+pub fn contains_key_by<Q>(&self, key: &Q) -> bool
+where K: Borrow<Q>, Q: Hash + Eq + ?Sized;
+pub fn remove_by<Q>(&self, key: &Q) -> Option<V>
+where K: Borrow<Q>, Q: Hash + Eq + ?Sized;
+```
+
+Each behaves exactly like the matching `Cache` method, but accepts any
+borrowed form of the key (for example `&str` for `String` keys).
+
 Every cache type implements `Cache<K, V>` for matching `K, V` bounds — frozen.
 
 ### `Send + Sync` impls
@@ -163,14 +178,14 @@ The following observable behaviours are part of the contract and require a 2.0 r
 - **`LfuCache`** evicts the lowest-counter entry on overflow, breaking ties by least-recently-accessed.
 - **`TtlCache`** evicts the soonest-expiring entry on overflow; expired entries are removed lazily on access.
 - **`TinyLfuCache`** admits an incoming key on overflow only if its sketch-estimated frequency exceeds the LRU victim's; rejected admissions return `None`.
-- **`SizedCache`** evicts least-recently-accessed entries until the new entry fits within `max_weight`. Values whose own weight exceeds `max_weight` (or the per-shard ceiling, when applicable) are silently rejected.
+- **`SizedCache`** evicts least-recently-accessed entries until the new entry fits within `max_weight`. Values whose own weight exceeds `max_weight` are silently rejected. The bound covers only the weigher's numbers, not memory: keys, per-entry overhead and zero-weight values are outside it (see the `SizedCache` type docs).
 - **`CacheError::InvalidCapacity`** is returned by every fallible constructor when capacity (or `max_weight` for `SizedCache`) is zero.
 - **No `unsafe`, no `panic!`, no `unwrap`, no `expect`** on shipping paths. No background threads. No required async runtime.
 - **`Send + Sync`** as documented above.
 
 ### Sharded eviction is approximate (by design)
 
-Once a cache holds at least 32 entries (for entry-bounded caches) or 32 bytes (for `SizedCache`), the internal storage is sharded into up to 16 independent stores. Eviction within an overflowing shard picks the local-to-shard candidate (least-recently-accessed, lowest-counter, soonest-expiring, etc.) — **not** the global candidate. Hit-rate impact for well-distributed keys is statistically negligible; the eviction-precision trade-off is the contract.
+Once an entry-bounded cache has a capacity of at least 32 entries, the internal storage is sharded into up to 16 independent stores. Eviction within an overflowing shard picks the local-to-shard candidate (least-recently-accessed, lowest-counter, soonest-expiring, etc.), **not** the global candidate. Hit-rate impact for well-distributed keys is statistically negligible; the eviction-precision trade-off is the contract.
 
 `SizedCache` is currently unsharded; that may change in a future release. When it does change, it will keep the existing weight-budget contract (no value larger than `max_weight` is ever admitted) regardless of internal layout.
 

@@ -7,10 +7,12 @@ use std::sync::{Mutex, MutexGuard};
 /// Extension trait giving every cache a poison-tolerant `lock`.
 ///
 /// A panic inside any operation that holds an inner `Mutex` poisons it.
-/// The cache's invariants are not weakened by a poisoned lock — every
-/// operation re-establishes consistency before returning — so we recover
-/// the guard rather than propagating the poison upward as a user-visible
-/// error.
+/// The only code that can panic while a lock is held is the user's `Hash`,
+/// `Eq` and `Clone` impls. Every operation orders its steps so that such a
+/// panic leaves the index and the eviction structures consistent: at
+/// worst an entry becomes unreachable and is reclaimed by `clear`. We
+/// therefore recover the guard rather than propagating the poison upward
+/// as a user-visible error.
 pub(crate) trait MutexExt<T> {
     fn lock_recover(&self) -> MutexGuard<'_, T>;
 }

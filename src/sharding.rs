@@ -31,6 +31,16 @@ pub(crate) const DEFAULT_SHARDS: usize = 16;
 /// fidelity for too little contention reduction.
 pub(crate) const MIN_PER_SHARD: usize = 16;
 
+/// Largest number of slots a shard reserves up front. Larger shards grow
+/// on demand, so a huge configured capacity neither commits its memory at
+/// construction nor overflows the allocator's size computation.
+pub(crate) const MAX_INITIAL_RESERVE: usize = 1024;
+
+/// Initial reservation for a shard of the given capacity.
+pub(crate) fn initial_reserve(capacity: NonZeroUsize) -> usize {
+    capacity.get().min(MAX_INITIAL_RESERVE)
+}
+
 /// Picks a shard count for the given total capacity. Always a power of two
 /// so `hash & (shards - 1)` works in place of `hash % shards`.
 ///

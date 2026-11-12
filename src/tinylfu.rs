@@ -1,5 +1,6 @@
 //! TinyLFU cache — sharded arena-backed LRU main + per-shard Count-Min Sketch.
 
+use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -12,6 +13,10 @@ use crate::util::MutexExt;
 
 const SKETCH_DEPTH: usize = 4;
 const MIN_SKETCH_WIDTH: usize = 64;
+/// Upper bound on the sketch row width (4 MiB of counters per shard at
+/// depth 4). Keeps the width computation from overflowing for huge
+/// capacities; past this size the frequency estimate is a little coarser.
+const MAX_SKETCH_WIDTH: usize = 1 << 20;
 
 /// A bounded, thread-safe cache with **admission control**.
 ///
@@ -79,15 +84,15 @@ where
     K: Eq + Hash + Clone,
 {
     fn with_capacity(capacity: NonZeroUsize) -> Self {
-        let cap = capacity.get();
+        let reserve = sharding::initial_reserve(capacity);
         Self {
             capacity,
-            nodes: Vec::with_capacity(cap),
+            nodes: Vec::with_capacity(reserve),
             free: Vec::new(),
             head: None,
             tail: None,
-            map: HashMap::with_capacity(cap),
-            sketch: CountMinSketch::new(cap),
+            map: HashMap::with_capacity(reserve),
+            sketch: CountMinSketch::new(capacity.get()),
         }
     }
 
@@ -204,6 +209,59 @@ where
         let sharded = Sharded::from_factory(num_shards, |_| Inner::with_capacity(per_shard));
         Self { capacity, sharded }
     }
+
+    /// Like [`get`](Cache::get), but takes any borrowed form of the key,
+    /// so a `TinyLfuCache<String, V>` can be queried with a `&str` without
+    /// building a `String`. Counts as an access for the frequency sketch.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cache_mod::{Cache, TinyLfuCache};
+    ///
+    /// let cache: TinyLfuCache<String, u32> = TinyLfuCache::new(8).expect("capacity > 0");
+    /// cache.insert("hits".to_string(), 3);
+    /// assert_eq!(cache.get_by("hits"), Some(3));
+    /// ```
+    pub fn get_by<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut inner = self.sharded.shard_for(key).lock_recover();
+        inner.sketch.increment(key);
+        let idx = *inner.map.get(key)?;
+        inner.promote(idx);
+        inner.nodes[idx].as_ref().map(|n| n.value.clone())
+    }
+
+    /// Like [`contains_key`](Cache::contains_key), but takes any borrowed
+    /// form of the key.
+    pub fn contains_key_by<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.sharded
+            .shard_for(key)
+            .lock_recover()
+            .map
+            .contains_key(key)
+    }
+
+    /// Like [`remove`](Cache::remove), but takes any borrowed form of the
+    /// key.
+    pub fn remove_by<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut inner = self.sharded.shard_for(key).lock_recover();
+        let idx = inner.map.remove(key)?;
+        inner.unlink(idx);
+        let node = inner.dealloc(idx);
+        Some(node.value)
+    }
 }
 
 impl<K, V> Cache<K, V> for TinyLfuCache<K, V>
@@ -212,11 +270,7 @@ where
     V: Clone,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.sharded.shard_for(key).lock_recover();
-        inner.sketch.increment(key);
-        let idx = *inner.map.get(key)?;
-        inner.promote(idx);
-        inner.nodes[idx].as_ref().map(|n| n.value.clone())
+        self.get_by(key)
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
@@ -235,17 +289,18 @@ where
         if inner.map.len() >= inner.capacity.get() {
             let candidate_freq = inner.sketch.estimate(&key);
             let tail_idx = inner.tail?;
-            let victim_key = inner.nodes[tail_idx]
+            let shard = &mut *inner;
+            let victim = shard.nodes[tail_idx]
                 .as_ref()
-                .map(|n| n.key.clone())
                 .unwrap_or_else(|| unreachable!("tail must be occupied"));
-            let victim_freq = inner.sketch.estimate(&victim_key);
-            if candidate_freq <= victim_freq {
+            if candidate_freq <= shard.sketch.estimate(&victim.key) {
                 return None;
             }
+            // Index entry first, then the slot: a panic in the user's
+            // `Hash` or `Eq` leaves the index and the arena in step.
+            let _ = shard.map.remove(&victim.key);
             inner.unlink(tail_idx);
             let _ = inner.dealloc(tail_idx);
-            let _ = inner.map.remove(&victim_key);
         }
 
         let idx = inner.alloc(Node {
@@ -254,25 +309,17 @@ where
             prev: None,
             next: None,
         });
-        inner.push_front(idx);
         let _ = inner.map.insert(key, idx);
+        inner.push_front(idx);
         None
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.sharded.shard_for(key).lock_recover();
-        let idx = inner.map.remove(key)?;
-        inner.unlink(idx);
-        let node = inner.dealloc(idx);
-        Some(node.value)
+        self.remove_by(key)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.sharded
-            .shard_for(key)
-            .lock_recover()
-            .map
-            .contains_key(key)
+        self.contains_key_by(key)
     }
 
     fn len(&self) -> usize {
@@ -313,8 +360,10 @@ struct CountMinSketch {
 
 impl CountMinSketch {
     fn new(capacity: usize) -> Self {
-        let mut width = capacity.saturating_mul(2).max(MIN_SKETCH_WIDTH);
-        width = width.next_power_of_two();
+        let width = capacity
+            .saturating_mul(2)
+            .clamp(MIN_SKETCH_WIDTH, MAX_SKETCH_WIDTH)
+            .next_power_of_two();
         let sample_window = (capacity as u64).saturating_mul(10).max(64);
         Self {
             counters: vec![0; width.saturating_mul(SKETCH_DEPTH)],
@@ -325,7 +374,7 @@ impl CountMinSketch {
         }
     }
 
-    fn estimate<K: Hash>(&self, key: &K) -> u8 {
+    fn estimate<K: Hash + ?Sized>(&self, key: &K) -> u8 {
         let mut min = u8::MAX;
         for d in 0..SKETCH_DEPTH {
             let idx = self.cell(d, key);
@@ -337,7 +386,7 @@ impl CountMinSketch {
         min
     }
 
-    fn increment<K: Hash>(&mut self, key: &K) {
+    fn increment<K: Hash + ?Sized>(&mut self, key: &K) {
         for d in 0..SKETCH_DEPTH {
             let idx = self.cell(d, key);
             if let Some(slot) = self.counters.get_mut(idx) {
@@ -364,14 +413,14 @@ impl CountMinSketch {
         }
     }
 
-    fn cell<K: Hash>(&self, d: usize, key: &K) -> usize {
+    fn cell<K: Hash + ?Sized>(&self, d: usize, key: &K) -> usize {
         let h = hash_with_seed(key, d as u64);
         let col = (h % self.width_u64) as usize;
         d.saturating_mul(self.width).saturating_add(col)
     }
 }
 
-fn hash_with_seed<K: Hash>(key: &K, seed: u64) -> u64 {
+fn hash_with_seed<K: Hash + ?Sized>(key: &K, seed: u64) -> u64 {
     let mut hasher = DefaultHasher::new();
     seed.hash(&mut hasher);
     key.hash(&mut hasher);

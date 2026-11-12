@@ -1,5 +1,6 @@
 //! Least-Frequently-Used (LFU) cache — sharded, per-shard BTreeMap priority index.
 
+use core::borrow::Borrow;
 use core::hash::Hash;
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
@@ -71,10 +72,9 @@ where
     K: Eq + Hash + Clone,
 {
     fn with_capacity(capacity: NonZeroUsize) -> Self {
-        let cap = capacity.get();
         Self {
             capacity,
-            map: HashMap::with_capacity(cap),
+            map: HashMap::with_capacity(sharding::initial_reserve(capacity)),
             by_priority: BTreeMap::new(),
             clock: 0,
         }
@@ -124,14 +124,25 @@ where
         let sharded = Sharded::from_factory(num_shards, |_| Inner::with_capacity(per_shard));
         Self { capacity, sharded }
     }
-}
 
-impl<K, V> Cache<K, V> for LfuCache<K, V>
-where
-    K: Eq + Hash + Clone,
-    V: Clone,
-{
-    fn get(&self, key: &K) -> Option<V> {
+    /// Like [`get`](Cache::get), but takes any borrowed form of the key,
+    /// so an `LfuCache<String, V>` can be queried with a `&str` without
+    /// building a `String`. Counts as an access.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cache_mod::{Cache, LfuCache};
+    ///
+    /// let cache: LfuCache<String, u32> = LfuCache::new(8).expect("capacity > 0");
+    /// cache.insert("hits".to_string(), 3);
+    /// assert_eq!(cache.get_by("hits"), Some(3));
+    /// ```
+    pub fn get_by<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut inner = self.sharded.shard_for(key).lock_recover();
         let new_age = inner.tick();
 
@@ -144,9 +155,48 @@ where
             (old, new, entry.value.clone())
         };
 
-        let _ = inner.by_priority.remove(&old_priority);
-        let _ = inner.by_priority.insert(new_priority, key.clone());
+        // Move the stored key to its new priority slot; no key clone.
+        if let Some(stored) = inner.by_priority.remove(&old_priority) {
+            let _ = inner.by_priority.insert(new_priority, stored);
+        }
         Some(value)
+    }
+
+    /// Like [`contains_key`](Cache::contains_key), but takes any borrowed
+    /// form of the key.
+    pub fn contains_key_by<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.sharded
+            .shard_for(key)
+            .lock_recover()
+            .map
+            .contains_key(key)
+    }
+
+    /// Like [`remove`](Cache::remove), but takes any borrowed form of the
+    /// key.
+    pub fn remove_by<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let mut inner = self.sharded.shard_for(key).lock_recover();
+        let entry = inner.map.remove(key)?;
+        let _ = inner.by_priority.remove(&(entry.count, entry.age));
+        Some(entry.value)
+    }
+}
+
+impl<K, V> Cache<K, V> for LfuCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn get(&self, key: &K) -> Option<V> {
+        self.get_by(key)
     }
 
     fn insert(&self, key: K, value: V) -> Option<V> {
@@ -184,18 +234,11 @@ where
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut inner = self.sharded.shard_for(key).lock_recover();
-        let entry = inner.map.remove(key)?;
-        let _ = inner.by_priority.remove(&(entry.count, entry.age));
-        Some(entry.value)
+        self.remove_by(key)
     }
 
     fn contains_key(&self, key: &K) -> bool {
-        self.sharded
-            .shard_for(key)
-            .lock_recover()
-            .map
-            .contains_key(key)
+        self.contains_key_by(key)
     }
 
     fn len(&self) -> usize {
