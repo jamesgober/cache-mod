@@ -9,13 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.1.0] - 2026-11-12
+
+Fixes a `SizedCache` defect that could return one key's value for another
+key. Upgrade is recommended for every user of `SizedCache`. No breaking
+changes; MSRV stays at 1.75.
+
+### Security
+
+- `SizedCache`: an update that made a value larger than the remaining
+  budget evicted other entries but left their keys in the index. A later
+  `get` of an evicted key then panicked, or, once the freed slot had been
+  reused by another insert, returned that other key's value; `remove` of
+  the stale key could unlink the wrong entry. Any `SizedCache` whose values
+  change size on update was affected (1.0.0 and earlier). All eviction
+  paths now share one routine that removes the index entry together with
+  the slot.
+
 ### Added
+
+- `get_by`, `contains_key_by` and `remove_by` on every cache type. They
+  take any borrowed form of the key (`K: Borrow<Q>`, `Q: ?Sized`), so a
+  `String`-keyed cache can be queried with a `&str` without allocating.
+  The `Cache` trait is unchanged.
+- Property test that drives `SizedCache` with values that grow and shrink
+  on update and compares every result against a model, plus internal
+  invariant checks (index size equals live nodes, list links, total
+  weight) for `SizedCache` and `TtlCache`.
+- `tests/regressions.rs` with a test for each fix in this release.
 
 ### Changed
 
+- `TtlCache` keeps a per-shard deadline index. Eviction on overflow no
+  longer scans the whole shard: insert at capacity went from 2 to 15 us
+  (16k and 160k entries) to about 450 ns at both sizes on the same
+  machine, and `len` went from 15 to 270 us to about 230 ns. Every
+  operation is now O(log n) in the shard size.
+- `LfuCache::get` no longer clones the key on every hit; the stored key is
+  moved to its new priority slot.
+- Constructors reserve at most 1024 slots per shard up front and grow on
+  demand, and the `TinyLfuCache` sketch width is capped. `LruCache::new`,
+  `LfuCache::new` and `TtlCache::new` with `usize::MAX`, and
+  `TinyLfuCache::new` with very large capacities, no longer panic with
+  "capacity overflow", and a large configured capacity no longer commits
+  its memory at start-up.
+
 ### Fixed
 
-### Security
+- A panic in a key's `Hash` or `Eq` during eviction (LRU, TinyLFU, Sized)
+  freed the victim's slot before removing its index entry, leaving the
+  index pointing at a freed slot. The index entry is now removed first.
+- `docs/STABILITY.md` no longer describes `SizedCache` as sharded.
+
+### Documentation
+
+- `SizedCache` docs, `docs/API.md` and `docs/STABILITY.md` state that the
+  bound covers only the weigher's numbers, not memory: keys, per-entry
+  overhead and zero-weight values are outside it. A worked example shows a
+  weigher with a fixed per-entry charge for untrusted input.
+- `TtlCache` docs state the cost of each operation and of `len`.
+- The poison-recovery notes now say what can panic under the lock (user
+  `Hash`, `Eq` and `Clone`) and what state such a panic leaves.
 
 ---
 
@@ -250,7 +306,8 @@ Docs and repo hygiene. Library code is byte-identical to 0.5.0 — `cargo update
 - REPS compliance baseline.
 - CI for Linux/macOS/Windows on stable and MSRV (1.75).
 
-[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/cache-mod/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jamesgober/cache-mod/releases/tag/v1.1.0
 [1.0.0]: https://github.com/jamesgober/cache-mod/releases/tag/v1.0.0
 [0.9.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.9.0
 [0.7.0]: https://github.com/jamesgober/cache-mod/releases/tag/v0.7.0

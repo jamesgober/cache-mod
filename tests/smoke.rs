@@ -546,3 +546,52 @@ fn sized_is_send_and_sync() {
     assert_send::<SizedCache<u32, String>>();
     assert_sync::<SizedCache<u32, String>>();
 }
+
+#[test]
+fn borrowed_key_lookups_work_on_every_cache_type() {
+    fn weigh(v: &u32) -> usize {
+        *v as usize
+    }
+    let lru: LruCache<String, u32> = LruCache::new(8).expect("capacity > 0");
+    let lfu: LfuCache<String, u32> = LfuCache::new(8).expect("capacity > 0");
+    let ttl: TtlCache<String, u32> =
+        TtlCache::new(8, Duration::from_secs(60)).expect("capacity > 0");
+    let tiny: TinyLfuCache<String, u32> = TinyLfuCache::new(8).expect("capacity > 0");
+    let sized: SizedCache<String, u32> = SizedCache::new(100, weigh).expect("max_weight > 0");
+
+    let _ = lru.insert("k".to_string(), 1);
+    let _ = lfu.insert("k".to_string(), 2);
+    let _ = ttl.insert("k".to_string(), 3);
+    let _ = tiny.insert("k".to_string(), 4);
+    let _ = sized.insert("k".to_string(), 5);
+
+    assert_eq!(lru.get_by("k"), Some(1));
+    assert_eq!(lfu.get_by("k"), Some(2));
+    assert_eq!(ttl.get_by("k"), Some(3));
+    assert_eq!(tiny.get_by("k"), Some(4));
+    assert_eq!(sized.get_by("k"), Some(5));
+
+    assert!(lru.contains_key_by("k") && lfu.contains_key_by("k") && ttl.contains_key_by("k"));
+    assert!(tiny.contains_key_by("k") && sized.contains_key_by("k"));
+    assert!(!lru.contains_key_by("missing"));
+
+    assert_eq!(lru.remove_by("k"), Some(1));
+    assert_eq!(lfu.remove_by("k"), Some(2));
+    assert_eq!(ttl.remove_by("k"), Some(3));
+    assert_eq!(tiny.remove_by("k"), Some(4));
+    assert_eq!(sized.remove_by("k"), Some(5));
+    assert_eq!(sized.total_weight(), 0);
+    assert!(lru.is_empty() && lfu.is_empty() && ttl.is_empty() && tiny.is_empty());
+}
+
+#[test]
+fn lfu_get_by_keeps_priority_order() {
+    let c: LfuCache<String, u32> = LfuCache::new(2).expect("capacity > 0");
+    let _ = c.insert("a".to_string(), 1);
+    let _ = c.insert("b".to_string(), 2);
+    assert_eq!(c.get_by("a"), Some(1));
+    let _ = c.insert("c".to_string(), 3);
+    assert!(!c.contains_key_by("b"));
+    assert_eq!(c.get_by("a"), Some(1));
+    assert_eq!(c.get_by("c"), Some(3));
+}

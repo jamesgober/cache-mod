@@ -68,7 +68,7 @@ sized.insert("payload", vec![0u8; 256]);
 - `SizedCache<K, V>` — capacity bound is total byte-weight across entries.
 - `CacheError` — error type returned by constructors.
 
-Arena-backed internals (O(1) for LRU/TinyLFU/Sized, O(log n) for LFU)
+Arena-backed internals (O(1) for LRU/TinyLFU/Sized, O(log n) for LFU and TTL)
 and sharded concurrency (up to 16 shards for entry-bounded caches) ship
 under the same public surface. Future internal improvements within the
 1.x line will be source-compatible.
